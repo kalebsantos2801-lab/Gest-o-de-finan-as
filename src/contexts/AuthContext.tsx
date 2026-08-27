@@ -1,0 +1,573 @@
+'use client';
+
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { User, Session } from '@supabase/supabase-js';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { Profile, Family, FamilyMember, TrialPeriod, AdminRole } from '@/types/database';
+
+interface SignUpData {
+  name: string;
+  email: string;
+  password: string;
+  confirmPassword?: string;
+  familyName: string;
+}
+
+interface AuthContextType {
+  user: User | null;
+  session: Session | null;
+  profile: Profile | null;
+  family: Family | null;
+  familyMembers: FamilyMember[];
+  trial: TrialPeriod | null;
+  adminRole: AdminRole | null;
+  isSuperAdmin: boolean;
+  loading: boolean;
+  isAuthenticated: boolean;
+  isTrialExpired: boolean;
+  serverTime: Date;
+  isConfigured: boolean;
+  signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string; isSuperAdmin?: boolean }>;
+  signUp: (data: SignUpData) => Promise<{ success: boolean; error?: string }>;
+  signOut: () => Promise<void>;
+  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
+  updatePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  refreshProfile: () => Promise<void>;
+  requestTrialRelease: (reason: string) => Promise<{ success: boolean; error?: string }>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [family, setFamily] = useState<Family | null>(null);
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  const [trial, setTrial] = useState<TrialPeriod | null>(null);
+  const [adminRole, setAdminRole] = useState<AdminRole | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [serverTimeOffset, setServerTimeOffset] = useState<number>(0);
+  const [serverTime, setServerTime] = useState<Date>(new Date());
+
+  // Sync with authoritative server time to prevent client clock manipulation
+  const syncServerTime = useCallback(async () => {
+    try {
+      const res = await fetch('/api/time', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        const serverMs = new Date(data.serverTime).getTime();
+        const clientMs = Date.now();
+        const offset = serverMs - clientMs;
+        setServerTimeOffset(offset);
+        setServerTime(new Date(serverMs));
+      }
+    } catch {
+      // Fallback
+    }
+  }, []);
+
+  useEffect(() => {
+    syncServerTime();
+    // Only update root serverTime once every 30 seconds to prevent unnecessary app-wide re-renders
+    const interval = setInterval(() => {
+      setServerTime(new Date(Date.now() + serverTimeOffset));
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [syncServerTime, serverTimeOffset]);
+
+  // Load profile, family, and trial information for current authenticated user
+  const loadUserData = useCallback(async (currentUser: User) => {
+    if (!isSupabaseConfigured) return;
+
+    try {
+      // 1. Fetch Profile
+      const { data: profileData, error: profileErr } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', currentUser.id)
+        .maybeSingle();
+
+      if (profileErr) {
+        console.warn('Error fetching profile:', profileErr.message);
+      }
+
+      let currentProfile = profileData;
+
+      if (!currentProfile || !currentProfile.family_id) {
+        // Double check: check if the user already has any family member record
+        const { data: existingMember } = await supabase
+          .from('family_members')
+          .select('family_id')
+          .eq('user_id', currentUser.id)
+          .maybeSingle();
+
+        if (existingMember?.family_id) {
+          // A family association already exists! Recover and use it instead of creating a new family.
+          const { data: recoveredProfile } = await supabase
+            .from('profiles')
+            .upsert({
+              id: currentUser.id,
+              full_name: currentProfile?.full_name || currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Usuário',
+              email: currentProfile?.email || currentUser.email,
+              family_id: existingMember.family_id,
+              role: currentProfile?.role || 'owner',
+              status: currentProfile?.status || 'trial'
+            })
+            .select()
+            .single();
+          if (recoveredProfile) currentProfile = recoveredProfile;
+        } else {
+          // Auto-create Family and Profile if they don't exist (e.g., OAuth login)
+          const familyName = currentUser.user_metadata?.family_name || 'Minha Família';
+          const { data: newFamily } = await supabase
+            .from('families')
+            .insert({ name: familyName })
+            .select()
+            .single();
+
+          if (newFamily) {
+            const { data: newProfile } = await supabase
+              .from('profiles')
+              .upsert({
+                id: currentUser.id,
+                full_name: currentProfile?.full_name || currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Usuário',
+                email: currentProfile?.email || currentUser.email,
+                family_id: newFamily.id,
+                role: currentProfile?.role || 'owner',
+                status: currentProfile?.status || 'trial'
+              })
+              .select()
+              .single();
+            
+            if (newProfile) currentProfile = newProfile;
+            
+            await supabase.from('family_members').upsert({
+              family_id: newFamily.id,
+              user_id: currentUser.id,
+              member_type: 'Titular',
+              permission: 'owner',
+            });
+
+            const now = new Date();
+            const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+            await supabase.from('trial_periods').upsert({
+              user_id: currentUser.id,
+              family_id: newFamily.id,
+              trial_started_at: now.toISOString(),
+              trial_expires_at: expiresAt.toISOString(),
+              status: 'trial',
+            });
+          }
+        }
+      }
+
+      if (currentProfile) {
+        setProfile(currentProfile as Profile);
+
+        // 2. Fetch Family
+        if (currentProfile.family_id) {
+          const { data: familyData } = await supabase
+            .from('families')
+            .select('*')
+            .eq('id', currentProfile.family_id)
+            .maybeSingle();
+          
+          if (familyData) {
+            setFamily(familyData as Family);
+          }
+
+          // Fetch family members
+          const { data: membersData } = await supabase
+            .from('family_members')
+            .select('*, profile:profiles(*)')
+            .eq('family_id', currentProfile.family_id);
+
+          if (membersData) {
+            setFamilyMembers(membersData as FamilyMember[]);
+          }
+        }
+      }
+
+      // 3. Fetch Trial Period
+      const { data: trialData } = await supabase
+        .from('trial_periods')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .maybeSingle();
+
+      if (trialData) {
+        setTrial(trialData as TrialPeriod);
+      }
+
+      // 4. Fetch Admin Role
+      const { data: adminData } = await supabase
+        .from('admin_roles')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .maybeSingle();
+
+      if (adminData) {
+        setAdminRole(adminData as AdminRole);
+      } else {
+        setAdminRole(null);
+      }
+    } catch (err) {
+      console.error('Error loading user data:', err);
+    }
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    if (user) {
+      await loadUserData(user);
+    }
+  }, [user, loadUserData]);
+
+  // Handle Supabase Auth state changes & session init
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        loadUserData(session.user).finally(() => {
+          if (isMounted) setLoading(false);
+        });
+      } else {
+        setLoading(false);
+      }
+    }).catch(() => {
+      if (isMounted) setLoading(false);
+    });
+
+    // Listen to real auth state changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (!isMounted) return;
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (newSession?.user) {
+          loadUserData(newSession.user);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setSession(null);
+        setProfile(null);
+        setFamily(null);
+        setFamilyMembers([]);
+        setTrial(null);
+        setAdminRole(null);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [loadUserData]);
+
+  // Sign In using real Supabase Auth
+  const signIn = async (email: string, password: string) => {
+    if (!isSupabaseConfigured) {
+      return { 
+        success: false, 
+        error: 'Supabase não está configurado. Defina as variáveis NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY no ambiente.' 
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      if (data.user) {
+        setUser(data.user);
+        setSession(data.session);
+        await loadUserData(data.user);
+
+        // Check if user is superadmin
+        const { data: adminData } = await supabase
+          .from('admin_roles')
+          .select('*')
+          .eq('user_id', data.user.id)
+          .maybeSingle();
+
+        const isSuperAdmin = adminData?.role === 'superadmin';
+
+        return { success: true, isSuperAdmin };
+      }
+
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao realizar login';
+      return { success: false, error: msg };
+    }
+  };
+
+  // Sign Up: Supabase Auth -> Profile -> Family -> Family Member -> 7-day Trial
+  const signUp = async ({ name, email, password, confirmPassword, familyName }: SignUpData) => {
+    if (!isSupabaseConfigured) {
+      return { 
+        success: false, 
+        error: 'Supabase não está configurado. Por favor, conecte seu projeto Supabase no arquivo .env.local.' 
+      };
+    }
+
+    if (!name.trim()) return { success: false, error: 'O nome é obrigatório.' };
+    if (!email.trim() || !email.includes('@')) return { success: false, error: 'Insira um e-mail válido.' };
+    if (!password || password.length < 6) return { success: false, error: 'A senha deve ter no mínimo 6 caracteres.' };
+    if (confirmPassword && password !== confirmPassword) return { success: false, error: 'As senhas não conferem.' };
+    if (!familyName.trim()) return { success: false, error: 'O nome da família é obrigatório.' };
+
+    try {
+      // 1. Create user in Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: name.trim(),
+            family_name: familyName.trim(),
+          },
+        },
+      });
+
+      if (authError) {
+        return { success: false, error: authError.message };
+      }
+
+      const createdUser = authData.user;
+      if (!createdUser) {
+        return { success: false, error: 'Não foi possível obter os dados do usuário cadastrado.' };
+      }
+
+      // 2. Create Family
+      const { data: createdFamily, error: familyError } = await supabase
+        .from('families')
+        .insert({
+          name: familyName.trim(),
+        })
+        .select()
+        .single();
+
+      const familyId = createdFamily?.id || null;
+      if (familyError && !familyId) {
+        console.warn('Family insert notice:', familyError.message);
+      }
+
+      // 3. Create / Upsert Profile
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert({
+          id: createdUser.id,
+          full_name: name.trim(),
+          email: email.trim(),
+          family_id: familyId,
+          role: 'owner',
+          status: 'trial',
+        });
+
+      if (profileError) {
+        console.warn('Profile upsert notice:', profileError.message);
+      }
+
+      // 4. Create Family Member
+      if (familyId) {
+        await supabase.from('family_members').upsert({
+          family_id: familyId,
+          user_id: createdUser.id,
+          member_type: 'Titular',
+          permission: 'owner',
+        });
+      }
+
+      // 5. Create 7-day Trial Period
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+      await supabase.from('trial_periods').upsert({
+        user_id: createdUser.id,
+        family_id: familyId,
+        trial_started_at: now.toISOString(),
+        trial_expires_at: expiresAt.toISOString(),
+        status: 'trial',
+      });
+
+      // Reload state if session already active (e.g. email confirmation off)
+      if (authData.session) {
+        setSession(authData.session);
+        setUser(createdUser);
+        await loadUserData(createdUser);
+      }
+
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao cadastrar conta';
+      return { success: false, error: msg };
+    }
+  };
+
+  // Sign Out
+  const signOut = async () => {
+    if (isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    }
+    setUser(null);
+    setSession(null);
+    setProfile(null);
+    setFamily(null);
+    setFamilyMembers([]);
+    setTrial(null);
+    setAdminRole(null);
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+  };
+
+  // Reset Password (sends email link)
+  const resetPassword = async (email: string) => {
+    if (!isSupabaseConfigured) {
+      return { success: false, error: 'Supabase não configurado.' };
+    }
+    try {
+      const redirectTo = typeof window !== 'undefined' 
+        ? `${window.location.origin}/reset-password`
+        : undefined;
+
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo,
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao solicitar recuperação de senha';
+      return { success: false, error: msg };
+    }
+  };
+
+  // Update Password
+  const updatePassword = async (newPassword: string) => {
+    if (!isSupabaseConfigured) {
+      return { success: false, error: 'Supabase não configurado.' };
+    }
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      // If user had an admin role marked with requires_password_change, clear it
+      if (user && adminRole?.requires_password_change) {
+        await supabase
+          .from('admin_roles')
+          .update({ requires_password_change: false })
+          .eq('user_id', user.id);
+        
+        await supabase.from('admin_logs').insert({
+          admin_id: user.id,
+          admin_email: user.email,
+          action: 'PASSWORD_INITIAL_CHANGED',
+          details: { timestamp: new Date().toISOString() },
+        });
+      }
+
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao atualizar senha';
+      return { success: false, error: msg };
+    }
+  };
+
+  // Request Trial Release / Extension
+  const requestTrialRelease = async (reason: string) => {
+    if (!user) return { success: false, error: 'Usuário não autenticado' };
+    try {
+      const { error } = await supabase.from('release_requests').insert({
+        user_id: user.id,
+        user_email: user.email || '',
+        user_name: profile?.full_name || 'Usuário',
+        reason: reason.trim(),
+        status: 'pending',
+      });
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao enviar solicitação';
+      return { success: false, error: msg };
+    }
+  };
+
+  // Check trial expiration against authoritative server time
+  const isSuperAdmin = Boolean(adminRole?.role === 'superadmin' || profile?.role === 'admin' && adminRole);
+  
+  let isTrialExpired = false;
+  if (!isSuperAdmin && trial) {
+    if (trial.status === 'blocked' || trial.status === 'expired' || profile?.status === 'blocked' || profile?.status === 'expired') {
+      isTrialExpired = true;
+    } else if (trial.trial_expires_at) {
+      const expireTime = new Date(trial.trial_expires_at).getTime();
+      const currentServerMs = serverTime.getTime();
+      if (currentServerMs > expireTime && trial.status !== 'active') {
+        isTrialExpired = true;
+      }
+    }
+  }
+
+  const value: AuthContextType = {
+    user,
+    session,
+    profile,
+    family,
+    familyMembers,
+    trial,
+    adminRole,
+    isSuperAdmin,
+    loading,
+    isAuthenticated: Boolean(user && session),
+    isTrialExpired,
+    serverTime,
+    isConfigured: isSupabaseConfigured,
+    signIn,
+    signUp,
+    signOut,
+    resetPassword,
+    updatePassword,
+    refreshProfile,
+    requestTrialRelease,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextType {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth deve ser utilizado dentro de um AuthProvider');
+  }
+  return context;
+}
