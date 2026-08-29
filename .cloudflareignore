@@ -1,0 +1,5 @@
+.next/cache
+.next/trace
+node_modules
+.git
+.env
