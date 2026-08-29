@@ -8,7 +8,7 @@ import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { memoryCache } from '@/lib/cache';
 import { Expense, Account } from '@/types/database';
-import { ArrowUpRight, Plus, Trash2, CheckCircle, Clock, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowUpRight, Plus, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Pencil } from 'lucide-react';
 
 export default function ExpensesPage() {
   return (
@@ -22,10 +22,19 @@ export default function ExpensesPage() {
 
 function ExpensesContent() {
   const { profile, user } = useAuth();
-  const [expenses, setExpenses] = useState<Expense[]>(() => memoryCache.get<Expense[]>('expenses_list') || []);
-  const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('expenses_accounts') || []);
-  const [loading, setLoading] = useState(() => !memoryCache.get('expenses_list'));
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+
+  useEffect(() => {
+    const cachedExpenses = memoryCache.get<Expense[]>('expenses_list');
+    const cachedAccounts = memoryCache.get<Account[]>('expenses_accounts');
+    if (cachedExpenses) setExpenses(cachedExpenses);
+    if (cachedAccounts) setAccounts(cachedAccounts);
+    if (cachedExpenses) setLoading(false);
+  }, []);
 
   // Form
   const [description, setDescription] = useState('Mercado');
@@ -39,6 +48,56 @@ function ExpensesContent() {
   const [status, setStatus] = useState<'paid' | 'pending'>('pending');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const handleStartEdit = (item: Expense) => {
+    setEditingExpense(item);
+    
+    const predefinedDescriptions = [
+      "Mercado", "Aluguel", "Conta de Luz", "Conta de Água", 
+      "Internet", "Farmácia", "Combustível", "Assinaturas", "Cartão de Crédito"
+    ];
+    if (predefinedDescriptions.includes(item.description)) {
+      setDescription(item.description);
+      setCustomDescription('');
+    } else {
+      setDescription('Outros');
+      setCustomDescription(item.description);
+    }
+
+    const predefinedCategories = [
+      "Alimentação", "Moradia", "Transporte", "Saúde", "Educação", "Lazer", "Serviços"
+    ];
+    if (predefinedCategories.includes(item.category)) {
+      setCategory(item.category);
+      setCustomCategory('');
+    } else {
+      setCategory('Outros');
+      setCustomCategory(item.category);
+    }
+
+    setAmount(item.amount.toString());
+    setDueDate(item.due_date);
+    setAccountId(item.account_id || '');
+    setIsRecurring(item.is_recurring || false);
+    setStatus(item.status);
+    setErrorMsg('');
+    setModalOpen(true);
+  };
+
+  const handleOpenNewModal = () => {
+    setEditingExpense(null);
+    setDescription('Mercado');
+    setCustomDescription('');
+    setCategory('Alimentação');
+    setCustomCategory('');
+    setAmount('');
+    setDueDate(new Date().toISOString().split('T')[0]);
+    setAccountId('');
+    setIsRecurring(false);
+    setStatus('pending');
+    setErrorMsg('');
+    setModalOpen(true);
+  };
 
   const loadData = useCallback(async () => {
     if (!profile?.family_id) {
@@ -111,21 +170,69 @@ function ExpensesContent() {
       const finalCategory = category === 'Outros' ? customCategory.trim() : category;
       const finalDescription = description === 'Outros' ? customDescription.trim() : description;
 
-      const { error } = await supabase.from('expenses').insert({
-        family_id: profile?.family_id,
-        user_id: user?.id,
-        description: finalDescription.trim(),
-        amount: parsedAmount,
-        category: finalCategory,
-        due_date: dueDate,
-        account_id: accountId || null,
-        is_recurring: isRecurring,
-        status,
-      });
+      if (editingExpense) {
+        // Track previous state for account balance updates
+        const oldAmount = Number(editingExpense.amount);
+        const oldStatus = editingExpense.status;
+        const oldAccountId = editingExpense.account_id;
 
-      if (error) {
-        setErrorMsg(error.message);
+        const { error } = await supabase
+          .from('expenses')
+          .update({
+            description: finalDescription.trim(),
+            amount: parsedAmount,
+            category: finalCategory,
+            due_date: dueDate,
+            account_id: accountId || null,
+            is_recurring: isRecurring,
+            status,
+          })
+          .eq('id', editingExpense.id);
+
+        if (error) {
+          setErrorMsg(error.message);
+          setSubmitting(false);
+          return;
+        }
+
+        // 1. Rollback old balance impact if it was paid
+        if (oldStatus === 'paid' && oldAccountId) {
+          const acc = accounts.find(a => a.id === oldAccountId);
+          if (acc) {
+            const newBalance = Number(acc.balance) + oldAmount;
+            await supabase.from('accounts').update({ balance: newBalance }).eq('id', oldAccountId);
+            acc.balance = newBalance;
+          }
+        }
+
+        // 2. Apply new balance impact if now paid
+        if (status === 'paid' && accountId) {
+          const acc = accounts.find(a => a.id === accountId);
+          if (acc) {
+            const newBalance = Number(acc.balance) - parsedAmount;
+            await supabase.from('accounts').update({ balance: newBalance }).eq('id', accountId);
+            acc.balance = newBalance;
+          }
+        }
       } else {
+        const { error } = await supabase.from('expenses').insert({
+          family_id: profile?.family_id,
+          user_id: user?.id,
+          description: finalDescription.trim(),
+          amount: parsedAmount,
+          category: finalCategory,
+          due_date: dueDate,
+          account_id: accountId || null,
+          is_recurring: isRecurring,
+          status,
+        });
+
+        if (error) {
+          setErrorMsg(error.message);
+          setSubmitting(false);
+          return;
+        }
+
         // Deduct from account balance if already paid and account selected
         if (status === 'paid' && accountId) {
           const acc = accounts.find((a) => a.id === accountId);
@@ -136,16 +243,17 @@ function ExpensesContent() {
               .eq('id', accountId);
           }
         }
-
-        setDescription('Mercado');
-        setCustomDescription('');
-        setCategory('Alimentação');
-        setCustomCategory('');
-        setAmount('');
-        setErrorMsg('');
-        setModalOpen(false);
-        await loadData();
       }
+
+      setDescription('Mercado');
+      setCustomDescription('');
+      setCategory('Alimentação');
+      setCustomCategory('');
+      setAmount('');
+      setErrorMsg('');
+      setModalOpen(false);
+      setEditingExpense(null);
+      await loadData();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Erro ao cadastrar despesa');
     } finally {
@@ -199,7 +307,7 @@ function ExpensesContent() {
 
             <button
               id="btn-new-expense"
-              onClick={() => setModalOpen(true)}
+              onClick={handleOpenNewModal}
               className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 active:scale-[0.98] cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -270,12 +378,12 @@ function ExpensesContent() {
           ) : (
             <div className="divide-y divide-white/5">
               {expenses.map((item) => (
-                <div key={item.id} className="p-4 sm:p-5 flex items-center justify-between hover:bg-white/[0.03] transition">
-                  <div className="flex items-center gap-3.5">
+                <div key={item.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-white/[0.03] transition">
+                  <div className="flex items-start sm:items-center gap-3.5 w-full sm:w-auto">
                     <button
                       onClick={() => toggleStatus(item)}
                       title={item.status === 'paid' ? 'Marcar como pendente' : 'Marcar como paga'}
-                      className={`p-2.5 rounded-2xl transition border ${
+                      className={`p-2.5 rounded-2xl transition border shrink-0 mt-0.5 sm:mt-0 ${
                         item.status === 'paid'
                           ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
                           : 'bg-white/5 border-white/10 text-slate-400 hover:border-amber-500/40 hover:text-amber-300'
@@ -283,9 +391,9 @@ function ExpensesContent() {
                     >
                       <CheckCircle className="w-4 h-4" />
                     </button>
-                    <div>
-                      <h4 className="text-sm font-bold text-white">{item.description}</h4>
-                      <p className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-sm font-bold text-white truncate max-w-[220px] sm:max-w-none">{item.description}</h4>
+                      <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
                         <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300 text-[10px]">
                           {item.category}
                         </span>
@@ -293,21 +401,30 @@ function ExpensesContent() {
                         <span className={`text-[10px] font-bold ${item.status === 'paid' ? 'text-emerald-400' : 'text-amber-400'}`}>
                           • {item.status === 'paid' ? 'PAGA' : 'PENDENTE'}
                         </span>
-                      </p>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto pt-2.5 sm:pt-0 border-t border-white/[0.03] sm:border-t-0">
                     <span className="text-sm sm:text-base font-extrabold text-rose-400 font-mono">
                       - R$ {Number(item.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </span>
-                    <button
-                      onClick={() => handleDelete(item.id)}
-                      className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5"
-                      title="Excluir"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleStartEdit(item)}
+                        className="p-2 text-slate-400 hover:text-indigo-400 transition rounded-xl hover:bg-white/5 active:scale-95 cursor-pointer"
+                        title="Editar"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(item.id)}
+                        className="p-2 text-slate-400 hover:text-rose-400 transition rounded-xl hover:bg-white/5 active:scale-95 cursor-pointer"
+                        title="Excluir"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -322,7 +439,7 @@ function ExpensesContent() {
           <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-md rounded-[28px] p-6 sm:p-7 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <ArrowUpRight className="w-5 h-5 text-rose-400" />
-              Cadastrar Nova Despesa Real
+              {editingExpense ? 'Editar Despesa Existente' : 'Cadastrar Nova Despesa Real'}
             </h3>
 
             {errorMsg && (
@@ -472,7 +589,7 @@ function ExpensesContent() {
                   disabled={submitting}
                   className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  {submitting ? 'Salvando no Supabase...' : 'Salvar Despesa'}
+                  {submitting ? 'Salvando no Supabase...' : editingExpense ? 'Salvar Alterações' : 'Salvar Despesa'}
                 </button>
               </div>
             </form>

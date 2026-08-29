@@ -262,9 +262,18 @@ function getBankStyle(cardName: string): BankStyle {
 
 function CardsContent() {
   const { profile, user } = useAuth();
-  const [cards, setCards] = useState<CreditCardType[]>(() => memoryCache.get<CreditCardType[]>('cards_list') || []);
-  const [purchases, setPurchases] = useState<CreditCardPurchase[]>(() => memoryCache.get<CreditCardPurchase[]>('cards_purchases') || []);
-  const [loading, setLoading] = useState(() => !memoryCache.get('cards_list'));
+  const [cards, setCards] = useState<CreditCardType[]>([]);
+  const [purchases, setPurchases] = useState<CreditCardPurchase[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const cachedCards = memoryCache.get<CreditCardType[]>('cards_list');
+    const cachedPurchases = memoryCache.get<CreditCardPurchase[]>('cards_purchases');
+    if (cachedCards) setCards(cachedCards);
+    if (cachedPurchases) setPurchases(cachedPurchases);
+    if (cachedCards) setLoading(false);
+  }, []);
+
   const [filterCardId, setFilterCardId] = useState<string>('ALL');
   
   // Card Modal

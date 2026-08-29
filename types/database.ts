@@ -68,11 +68,12 @@ export type AuditLog = AdminLog;
 
 export interface ReleaseRequest {
   id: string;
-  family_id: string;
+  family_id?: string | null;
   user_id: string;
   user_email: string;
   user_name?: string;
   reason: string;
+  payment_proof_url?: string | null;
   status: ReleaseRequestStatus;
   resolved_at?: string | null;
   resolved_by?: string | null;

@@ -3,6 +3,7 @@
 import React, { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/src/contexts/AuthContext';
+import { TrialGuard } from '@/components/auth/TrialGuard';
 import { Loader2 } from 'lucide-react';
 
 interface AuthGuardProps {
@@ -44,5 +45,6 @@ export function AuthGuard({ children }: AuthGuardProps) {
     return null;
   }
 
-  return <>{children}</>;
+  return <TrialGuard>{children}</TrialGuard>;
 }
+

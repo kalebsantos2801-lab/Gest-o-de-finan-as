@@ -232,7 +232,10 @@ export default function LoginPage() {
             <button
               id="btn-admin-access"
               type="button"
-              onClick={() => setAdminModalOpen(true)}
+              onClick={() => {
+                if (!adminEmail) setAdminEmail('superadmin123@gmail.com');
+                setAdminModalOpen(true);
+              }}
               className="flex items-center gap-2 text-xs text-slate-400 hover:text-amber-300 transition-colors cursor-pointer"
             >
               <Key className="w-3.5 h-3.5 text-amber-400" />
@@ -342,7 +345,7 @@ export default function LoginPage() {
                   required
                   value={adminEmail}
                   onChange={(e) => setAdminEmail(e.target.value)}
-                  placeholder="admin@exemplo.com"
+                  placeholder="kalebsantos2801@gmail.com"
                   className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all"
                 />
               </div>

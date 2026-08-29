@@ -22,9 +22,17 @@ export default function AccountsPage() {
 
 function AccountsContent() {
   const { profile, user } = useAuth();
-  const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('accounts_list') || []);
-  const [loading, setLoading] = useState(() => !memoryCache.get('accounts_list'));
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+
+  useEffect(() => {
+    const cached = memoryCache.get<Account[]>('accounts_list');
+    if (cached) {
+      setAccounts(cached);
+      setLoading(false);
+    }
+  }, []);
 
   const [name, setName] = useState('');
   const [type, setType] = useState<'checking' | 'savings' | 'investment' | 'cash' | 'other'>('checking');

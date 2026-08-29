@@ -22,7 +22,8 @@ import {
   X,
   Users,
   Database,
-  Bell
+  Bell,
+  Landmark
 } from 'lucide-react';
 import { SupabaseConfigModal } from '@/components/auth/SupabaseConfigModal';
 import { NotificationPermissionModal } from '@/components/notifications/NotificationPermissionModal';
@@ -32,7 +33,8 @@ const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/entradas', label: 'Entradas', icon: ArrowDownLeft },
   { href: '/despesas', label: 'Despesas', icon: ArrowUpRight },
-  { href: '/contas', label: 'Contas', icon: Wallet },
+  { href: '/contas', label: 'Contas', icon: Landmark },
+  { href: '/carteira', label: 'Carteira (Recarga)', icon: Wallet },
   { href: '/cartoes', label: 'Cartões', icon: CreditCard },
   { href: '/emprestimos', label: 'Empréstimos', icon: Banknote },
   { href: '/notificacoes', label: 'Notificações', icon: Bell },
@@ -44,7 +46,7 @@ const navItems = [
 
 export function AppHeader() {
   const pathname = usePathname();
-  const { user, profile, family, isSuperAdmin, signOut } = useAuth();
+  const { user, profile, family, isSuperAdmin, signOut, trial } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -118,7 +120,7 @@ export function AppHeader() {
                 id="header-btn-admin"
                 href="/admin"
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                  pathname.startsWith('/admin')
+                  pathname?.startsWith('/admin')
                     ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20'
                     : 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
                 }`}
@@ -127,6 +129,15 @@ export function AppHeader() {
                 Painel SuperAdmin
               </Link>
             )}
+
+            <Link
+              href="/carteira"
+              title="Recarregar Conta"
+              className="p-2 text-emerald-400 hover:text-emerald-300 hover:bg-white/5 rounded-xl border border-white/5 text-xs transition cursor-pointer flex items-center justify-center gap-1.5 font-bold"
+            >
+              <Wallet className="w-4 h-4 text-emerald-400" />
+              <span className="hidden xl:inline">Recarregar</span>
+            </Link>
 
             <Link
               href="/notificacoes"
@@ -169,6 +180,13 @@ export function AppHeader() {
 
           {/* Mobile hamburger */}
           <div className="flex lg:hidden items-center gap-2">
+            <Link
+              href="/carteira"
+              title="Recarregar"
+              className="p-2 text-emerald-400 hover:text-emerald-300 hover:bg-white/5 border border-white/5 rounded-xl flex items-center justify-center cursor-pointer"
+            >
+              <Wallet className="w-6 h-6 text-emerald-400" />
+            </Link>
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="p-2 text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-white/5 rounded-xl"

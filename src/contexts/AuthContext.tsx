@@ -33,7 +33,7 @@ interface AuthContextType {
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   updatePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
   refreshProfile: () => Promise<void>;
-  requestTrialRelease: (reason: string) => Promise<{ success: boolean; error?: string }>;
+  requestTrialRelease: (reason: string, proofUrl?: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -190,17 +190,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // 3. Fetch Trial Period
-      const { data: trialData } = await supabase
+      let trialData: TrialPeriod | null = null;
+      const { data: userTrial } = await supabase
         .from('trial_periods')
         .select('*')
         .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false })
         .maybeSingle();
 
-      if (trialData) {
-        setTrial(trialData as TrialPeriod);
+      if (userTrial) {
+        trialData = userTrial as TrialPeriod;
+      } else if (currentProfile?.family_id) {
+        const { data: familyTrial } = await supabase
+          .from('trial_periods')
+          .select('*')
+          .eq('family_id', currentProfile.family_id)
+          .order('created_at', { ascending: false })
+          .maybeSingle();
+        if (familyTrial) trialData = familyTrial as TrialPeriod;
       }
 
-      // 4. Fetch Admin Role
+      if (!trialData) {
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        trialData = {
+          id: currentUser.id,
+          user_id: currentUser.id,
+          family_id: currentProfile?.family_id || currentUser.id,
+          trial_started_at: currentProfile?.created_at || now.toISOString(),
+          trial_expires_at: expiresAt.toISOString(),
+          status: 'trial',
+          is_blocked: false,
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        };
+        try {
+          await supabase.from('trial_periods').upsert({
+            user_id: currentUser.id,
+            family_id: currentProfile?.family_id || currentUser.id,
+            trial_started_at: currentProfile?.created_at || now.toISOString(),
+            trial_expires_at: expiresAt.toISOString(),
+            status: 'trial',
+            is_blocked: false,
+          }, { onConflict: 'user_id' });
+        } catch {
+          // ignore
+        }
+      }
+
+      setTrial(trialData);
+
+      // 4. Fetch Admin Role (or assign for master admin email kalebsantos2801@gmail.com)
+      const isMasterAdminEmail = currentUser.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
+
       const { data: adminData } = await supabase
         .from('admin_roles')
         .select('*')
@@ -209,6 +251,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (adminData) {
         setAdminRole(adminData as AdminRole);
+      } else if (isMasterAdminEmail) {
+        const masterRole: AdminRole = {
+          id: currentUser.id,
+          user_id: currentUser.id,
+          email: currentUser.email || 'kalebsantos2801@gmail.com',
+          role: 'superadmin',
+          requires_password_change: false,
+          created_at: new Date().toISOString()
+        };
+        try {
+          await supabase.from('admin_roles').upsert({
+            user_id: currentUser.id,
+            email: currentUser.email || 'kalebsantos2801@gmail.com',
+            role: 'superadmin',
+            requires_password_change: false
+          });
+        } catch {
+          // Ignore silently if table not yet writable
+        }
+        setAdminRole(masterRole);
       } else {
         setAdminRole(null);
       }
@@ -277,6 +339,92 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [loadUserData]);
 
+  // Realtime subscription and fast 4-second polling for active user status and trial updates
+  useEffect(() => {
+    if (!user || !isSupabaseConfigured) return;
+
+    let isMounted = true;
+
+    // Fast polling fallback every 4s to catch any admin actions (block, unblock, trial adjustments)
+    const pollInterval = setInterval(async () => {
+      if (!isMounted) return;
+      try {
+        const { data: pData } = await supabase
+          .from('profiles')
+          .select('id, status, role, family_id')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (pData && isMounted) {
+          setProfile((prev) => prev ? { ...prev, ...pData } : null);
+        }
+
+        const { data: tData } = await supabase
+          .from('trial_periods')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .maybeSingle();
+
+        if (tData && isMounted) {
+          setTrial(tData as TrialPeriod);
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 4000);
+
+    const channel = supabase
+      .channel(`user-status-channel-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        () => {
+          if (isMounted) loadUserData(user);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'trial_periods', filter: `user_id=eq.${user.id}` },
+        () => {
+          if (isMounted) loadUserData(user);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+      supabase.removeChannel(channel);
+    };
+  }, [user, loadUserData]);
+
+// Helper to translate Supabase Auth errors to friendly Portuguese messages
+function translateAuthError(errorMsg: string): string {
+  if (!errorMsg) return 'Ocorreu um erro inesperado na autenticação.';
+  const lower = errorMsg.toLowerCase();
+  
+  if (lower.includes('invalid login credentials')) {
+    return 'E-mail ou senha incorretos. Por favor, verifique se o e-mail e a senha digitados estão corretos.';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'E-mail ainda não foi confirmado. Verifique a caixa de entrada do seu e-mail.';
+  }
+  if (lower.includes('user not found')) {
+    return 'E-mail não encontrado no sistema. Verifique o e-mail digitado ou crie uma conta.';
+  }
+  if (lower.includes('user already registered') || lower.includes('already registered')) {
+    return 'Este e-mail já está cadastrado no sistema. Tente realizar o login ou redefinir a senha.';
+  }
+  if (lower.includes('rate limit exceeded') || lower.includes('too many requests')) {
+    return 'Muitas tentativas de acesso em pouco tempo. Aguarde alguns instantes e tente novamente.';
+  }
+  if (lower.includes('password should be at least')) {
+    return 'A senha deve conter no mínimo 6 caracteres.';
+  }
+  return errorMsg;
+}
+
   // Sign In using real Supabase Auth
   const signIn = async (email: string, password: string) => {
     if (!isSupabaseConfigured) {
@@ -287,13 +435,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
+      const cleanEmail = email.trim();
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: cleanEmail,
         password,
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: translateAuthError(error.message) };
       }
 
       if (data.user) {
@@ -302,13 +451,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await loadUserData(data.user);
 
         // Check if user is superadmin
+        const isMasterAdminEmail = data.user.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
         const { data: adminData } = await supabase
           .from('admin_roles')
           .select('*')
           .eq('user_id', data.user.id)
           .maybeSingle();
 
-        const isSuperAdmin = adminData?.role === 'superadmin';
+        const isSuperAdmin = adminData?.role === 'superadmin' || isMasterAdminEmail;
 
         return { success: true, isSuperAdmin };
       }
@@ -316,7 +466,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro ao realizar login';
-      return { success: false, error: msg };
+      return { success: false, error: translateAuthError(msg) };
     }
   };
 
@@ -349,7 +499,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (authError) {
-        return { success: false, error: authError.message };
+        return { success: false, error: translateAuthError(authError.message) };
       }
 
       const createdUser = authData.user;
@@ -455,12 +605,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: translateAuthError(error.message) };
       }
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro ao solicitar recuperação de senha';
-      return { success: false, error: msg };
+      return { success: false, error: translateAuthError(msg) };
     }
   };
 
@@ -475,7 +625,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: translateAuthError(error.message) };
       }
 
       // If user had an admin role marked with requires_password_change, clear it
@@ -501,20 +651,89 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Request Trial Release / Extension
-  const requestTrialRelease = async (reason: string) => {
+  const requestTrialRelease = async (reason: string, proofUrl?: string) => {
     if (!user) return { success: false, error: 'Usuário não autenticado' };
     try {
-      const { error } = await supabase.from('release_requests').insert({
+      const resolvedUserName = profile?.full_name || user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário';
+      const userFamId = profile?.family_id || family?.id || null;
+
+      // Attempt 1: Full payload with family_id and payment_proof_url
+      const payload: Record<string, unknown> = {
         user_id: user.id,
         user_email: user.email || '',
-        user_name: profile?.full_name || 'Usuário',
-        reason: reason.trim(),
+        user_name: resolvedUserName,
+        reason: reason.trim() || (proofUrl ? 'Comprovante de pagamento anexado.' : 'Solicitação de liberação.'),
         status: 'pending',
-      });
+      };
 
-      if (error) {
-        return { success: false, error: error.message };
+      if (userFamId) payload.family_id = userFamId;
+      if (proofUrl) payload.payment_proof_url = proofUrl;
+
+      const { error: insertErr } = await supabase.from('release_requests').insert(payload);
+
+      if (insertErr) {
+        console.warn('First insert attempt on release_requests encountered an error, trying standard payload:', insertErr.message);
+        
+        // Attempt 2: Standard schema columns (user_id, user_email, user_name, reason, status)
+        const fallbackPayload = {
+          user_id: user.id,
+          user_email: user.email || '',
+          user_name: resolvedUserName,
+          reason: proofUrl ? `${reason.trim()} [Comprovante: ${proofUrl}]` : reason.trim(),
+          status: 'pending',
+        };
+
+        const { error: fallbackErr } = await supabase.from('release_requests').insert(fallbackPayload);
+        if (fallbackErr) {
+          console.error('Fallback insert into release_requests failed:', fallbackErr);
+          return { success: false, error: fallbackErr.message };
+        }
       }
+
+      // Notify Admins/SuperAdmins of the request
+      try {
+        const adminUserIds = new Set<string>();
+
+        // Fetch from admin_roles
+        const { data: adminRolesData } = await supabase
+          .from('admin_roles')
+          .select('user_id');
+        
+        if (adminRolesData) {
+          adminRolesData.forEach(r => {
+            if (r.user_id) adminUserIds.add(r.user_id);
+          });
+        }
+
+        // Fetch from profiles where is_super_admin is true, or email is kalebsantos2801@gmail.com
+        const { data: adminProfilesData } = await supabase
+          .from('profiles')
+          .select('id')
+          .or('is_super_admin.eq.true,role.eq.admin,email.ilike.kalebsantos2801@gmail.com');
+        
+        if (adminProfilesData) {
+          adminProfilesData.forEach(p => {
+            if (p.id) adminUserIds.add(p.id);
+          });
+        }
+
+        if (adminUserIds.size > 0) {
+          const notificationsToInsert = Array.from(adminUserIds).map(adminId => ({
+            user_id: adminId,
+            title: proofUrl ? '💰 Novo Comprovante Enviado' : '🚨 Nova Solicitação de Liberação',
+            message: `O usuário ${resolvedUserName} (${user.email || 'Sem email'}) enviou uma solicitação: "${reason.substring(0, 100)}${reason.length > 100 ? '...' : ''}"`,
+            type: 'trial_release',
+            reference_id: user.id,
+            target_url: '/admin',
+            is_read: false,
+          }));
+
+          await supabase.from('notifications').insert(notificationsToInsert);
+        }
+      } catch (notifErr) {
+        console.warn('Could not send notification to admins:', notifErr);
+      }
+
       return { success: true };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro ao enviar solicitação';
@@ -523,16 +742,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Check trial expiration against authoritative server time
-  const isSuperAdmin = Boolean(adminRole?.role === 'superadmin' || profile?.role === 'admin' && adminRole);
+  const isMasterAdminEmail = user?.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com' || profile?.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
+  const isSuperAdmin = Boolean(adminRole?.role === 'superadmin' || (profile?.role === 'admin' && adminRole) || isMasterAdminEmail);
   
   let isTrialExpired = false;
-  if (!isSuperAdmin && trial) {
-    if (trial.status === 'blocked' || trial.status === 'expired' || profile?.status === 'blocked' || profile?.status === 'expired') {
+  if (!isSuperAdmin) {
+    if (profile?.status === 'blocked' || trial?.status === 'blocked' || (trial as any)?.is_blocked === true) {
       isTrialExpired = true;
-    } else if (trial.trial_expires_at) {
+    } else if (profile?.status === 'expired' || trial?.status === 'expired') {
+      isTrialExpired = true;
+    } else if (trial?.trial_expires_at) {
       const expireTime = new Date(trial.trial_expires_at).getTime();
-      const currentServerMs = serverTime.getTime();
-      if (currentServerMs > expireTime && trial.status !== 'active') {
+      const currentMs = serverTime.getTime();
+      if (!isNaN(expireTime) && expireTime > 0 && currentMs >= expireTime) {
         isTrialExpired = true;
       }
     }

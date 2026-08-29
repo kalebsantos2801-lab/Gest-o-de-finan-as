@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { CountdownTimer } from '@/components/common/CountdownTimer';
 import { 
   ArrowDownLeft, 
   ArrowUpRight, 
@@ -53,13 +54,31 @@ export default function DashboardPage() {
 function DashboardContent() {
   const { profile, family, user, familyMembers, trial, serverTime, refreshProfile } = useAuth();
 
-  const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('dashboard_accounts') || []);
-  const [incomes, setIncomes] = useState<Income[]>(() => memoryCache.get<Income[]>('dashboard_incomes') || []);
-  const [expenses, setExpenses] = useState<Expense[]>(() => memoryCache.get<Expense[]>('dashboard_expenses') || []);
-  const [goals, setGoals] = useState<Goal[]>(() => memoryCache.get<Goal[]>('dashboard_goals') || []);
-  const [cards, setCards] = useState<CreditCardType[]>(() => memoryCache.get<CreditCardType[]>('dashboard_cards') || []);
-  const [debts, setDebts] = useState<Debt[]>(() => memoryCache.get<Debt[]>('dashboard_debts') || []);
-  const [loading, setLoading] = useState(() => !memoryCache.get('dashboard_accounts'));
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [incomes, setIncomes] = useState<Income[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [cards, setCards] = useState<CreditCardType[]>([]);
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const cachedAccounts = memoryCache.get<Account[]>('dashboard_accounts');
+    const cachedIncomes = memoryCache.get<Income[]>('dashboard_incomes');
+    const cachedExpenses = memoryCache.get<Expense[]>('dashboard_expenses');
+    const cachedGoals = memoryCache.get<Goal[]>('dashboard_goals');
+    const cachedCards = memoryCache.get<CreditCardType[]>('dashboard_cards');
+    const cachedDebts = memoryCache.get<Debt[]>('dashboard_debts');
+
+    if (cachedAccounts) setAccounts(cachedAccounts);
+    if (cachedIncomes) setIncomes(cachedIncomes);
+    if (cachedExpenses) setExpenses(cachedExpenses);
+    if (cachedGoals) setGoals(cachedGoals);
+    if (cachedCards) setCards(cachedCards);
+    if (cachedDebts) setDebts(cachedDebts);
+    if (cachedAccounts) setLoading(false);
+  }, []);
+
   const [copied, setCopied] = useState(false);
   const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
   const [selectedRange, setSelectedRange] = useState<'all' | 'thismonth' | '30days' | '15days'>('thismonth');
@@ -330,6 +349,14 @@ function DashboardContent() {
       <AppHeader />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8">
+        {/* Painel de Contagem Regressiva do Tempo de Acesso */}
+        {trial?.trial_expires_at && (
+          <CountdownTimer 
+            expiresAt={trial.trial_expires_at} 
+            variant="card"
+          />
+        )}
+
         {/* Módulo Topo: Pré-visualização das Minhas Contas & Pendências */}
         <div className="bg-gradient-to-r from-slate-900/95 via-slate-900/90 to-indigo-950/80 border border-white/10 rounded-[32px] p-6 sm:p-8 shadow-2xl relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-tr from-indigo-500/5 via-transparent to-rose-500/5 opacity-40 pointer-events-none" />

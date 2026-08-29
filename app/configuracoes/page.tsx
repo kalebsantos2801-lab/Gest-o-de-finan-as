@@ -44,9 +44,10 @@ export default function SettingsPage() {
 }
 
 function SettingsContent() {
-  const { user, profile, family, trial, isTrialExpired, serverTime } = useAuth();
+  const { user, profile, family, trial, isTrialExpired, serverTime, requestTrialRelease } = useAuth();
   const [members, setMembers] = useState<Profile[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
+  const [requestError, setRequestError] = useState<string | null>(null);
 
   // Push & Notification settings state
   const [pushPermission, setPushPermission] = useState<string>('default');
@@ -174,20 +175,22 @@ function SettingsContent() {
 
   const handleRequestRelease = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!family?.id || !user?.id) return;
+    if (!user?.id) return;
     setRequestLoading(true);
+    setRequestError(null);
     try {
-      await supabase.from('release_requests').insert({
-        family_id: family.id,
-        user_id: user.id,
-        user_email: user.email || '',
-        reason: releaseReason.trim() || 'Solicitação de extensão ou ativação de plano',
-        status: 'pending',
-      });
-      setRequestSent(true);
-      setReleaseReason('');
-    } catch (err) {
+      const reason = releaseReason.trim() || 'Solicitação de extensão ou ativação de plano';
+      const res = await requestTrialRelease(reason);
+      if (res.success) {
+        setRequestSent(true);
+        setReleaseReason('');
+      } else {
+        setRequestError(res.error || 'Erro ao enviar solicitação ao SuperAdmin.');
+      }
+    } catch (err: unknown) {
       console.error('Error requesting release:', err);
+      const msg = err instanceof Error ? err.message : 'Erro ao enviar solicitação';
+      setRequestError(msg);
     } finally {
       setRequestLoading(false);
     }
@@ -448,6 +451,9 @@ function SettingsContent() {
                   placeholder="Motivo da solicitação (ex: Gostaria de liberar o plano para o ano todo)"
                   className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
                 />
+                {requestError && (
+                  <p className="text-xs text-rose-400 font-medium">{requestError}</p>
+                )}
                 <div className="flex justify-end">
                   <button
                     type="submit"

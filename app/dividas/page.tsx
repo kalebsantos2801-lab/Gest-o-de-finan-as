@@ -8,7 +8,7 @@ import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { memoryCache } from '@/lib/cache';
 import { Debt } from '@/types/database';
-import { AlertOctagon, Plus, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { AlertOctagon, Plus, Trash2, CheckCircle2, AlertCircle, Loader2, Pencil } from 'lucide-react';
 
 export default function DebtsPage() {
   return (
@@ -22,9 +22,18 @@ export default function DebtsPage() {
 
 function DebtsContent() {
   const { profile, user } = useAuth();
-  const [debts, setDebts] = useState<Debt[]>(() => memoryCache.get<Debt[]>('debts_list') || []);
-  const [loading, setLoading] = useState(() => !memoryCache.get('debts_list'));
+  const [debts, setDebts] = useState<Debt[]>([]);
+  const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingDebt, setEditingDebt] = useState<Debt | null>(null);
+
+  useEffect(() => {
+    const cached = memoryCache.get<Debt[]>('debts_list');
+    if (cached) {
+      setDebts(cached);
+      setLoading(false);
+    }
+  }, []);
 
   const [creditor, setCreditor] = useState('');
   const [description, setDescription] = useState('Empréstimo Pessoal');
@@ -34,6 +43,41 @@ function DebtsContent() {
   const [priority, setPriority] = useState<'low' | 'medium' | 'high'>('medium');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const handleStartEdit = (item: Debt) => {
+    setEditingDebt(item);
+    setCreditor(item.creditor);
+    
+    const predefinedDescriptions = [
+      "Empréstimo Pessoal", "Financiamento", "Cartão de Crédito", 
+      "Cheque Especial", "Renegociação", "Acordo"
+    ];
+    if (predefinedDescriptions.includes(item.description)) {
+      setDescription(item.description);
+      setCustomDescription('');
+    } else {
+      setDescription('Outros');
+      setCustomDescription(item.description);
+    }
+
+    setTotalAmount(item.total_amount.toString());
+    setDueDate(item.due_date);
+    setPriority(item.priority);
+    setErrorMsg('');
+    setModalOpen(true);
+  };
+
+  const handleOpenNewModal = () => {
+    setEditingDebt(null);
+    setCreditor('');
+    setDescription('Empréstimo Pessoal');
+    setCustomDescription('');
+    setTotalAmount('');
+    setDueDate(new Date().toISOString().split('T')[0]);
+    setPriority('medium');
+    setErrorMsg('');
+    setModalOpen(true);
+  };
 
   const loadDebts = useCallback(async () => {
     if (!profile?.family_id) {
@@ -92,30 +136,53 @@ function DebtsContent() {
 
     try {
       const finalDescription = description === 'Outros' ? customDescription.trim() : description;
+      const parsedAmount = parseFloat(totalAmount.replace(',', '.'));
 
-      const { error } = await supabase.from('debts').insert({
-        family_id: profile?.family_id,
-        user_id: user?.id,
-        creditor: creditor.trim(),
-        description: finalDescription.trim() || 'Dívida a quitar',
-        total_amount: parseFloat(totalAmount.replace(',', '.')),
-        paid_amount: 0,
-        due_date: dueDate,
-        priority,
-        status: 'pending',
-      });
+      if (editingDebt) {
+        const { error } = await supabase
+          .from('debts')
+          .update({
+            creditor: creditor.trim(),
+            description: finalDescription.trim() || 'Dívida a quitar',
+            total_amount: parsedAmount,
+            due_date: dueDate,
+            priority,
+          })
+          .eq('id', editingDebt.id);
 
-      if (error) {
-        setErrorMsg(error.message);
+        if (error) {
+          setErrorMsg(error.message);
+          setSubmitting(false);
+          return;
+        }
       } else {
-        setCreditor('');
-        setDescription('Empréstimo Pessoal');
-        setCustomDescription('');
-        setTotalAmount('');
-        setErrorMsg('');
-        setModalOpen(false);
-        await loadDebts();
+        const { error } = await supabase.from('debts').insert({
+          family_id: profile?.family_id,
+          user_id: user?.id,
+          creditor: creditor.trim(),
+          description: finalDescription.trim() || 'Dívida a quitar',
+          total_amount: parsedAmount,
+          paid_amount: 0,
+          due_date: dueDate,
+          priority,
+          status: 'pending',
+        });
+
+        if (error) {
+          setErrorMsg(error.message);
+          setSubmitting(false);
+          return;
+        }
       }
+
+      setCreditor('');
+      setDescription('Empréstimo Pessoal');
+      setCustomDescription('');
+      setTotalAmount('');
+      setErrorMsg('');
+      setModalOpen(false);
+      setEditingDebt(null);
+      await loadDebts();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Erro ao cadastrar dívida');
     } finally {
@@ -165,7 +232,7 @@ function DebtsContent() {
             </div>
 
             <button
-              onClick={() => setModalOpen(true)}
+              onClick={handleOpenNewModal}
               className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-lg shadow-rose-600/25 border border-rose-400/20 active:scale-[0.98]"
             >
               <Plus className="w-4 h-4" />
@@ -187,7 +254,7 @@ function DebtsContent() {
               Parabéns! Registre apenas pendências reais que sua família pretende renegociar ou liquidar.
             </p>
             <button
-              onClick={() => setModalOpen(true)}
+              onClick={handleOpenNewModal}
               className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20"
             >
               + Registrar Dívida
@@ -237,6 +304,13 @@ function DebtsContent() {
                       </button>
                     )}
                     <button
+                      onClick={() => handleStartEdit(debt)}
+                      className="p-1.5 text-slate-400 hover:text-indigo-400 transition rounded-lg hover:bg-white/5"
+                      title="Editar"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
                       onClick={() => handleDelete(debt.id)}
                       className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5"
                     >
@@ -256,7 +330,7 @@ function DebtsContent() {
           <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-md rounded-[28px] p-6 sm:p-7 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <AlertOctagon className="w-5 h-5 text-rose-400" />
-              Nova Dívida a Renegociar
+              {editingDebt ? 'Editar Dívida Existente' : 'Nova Dívida a Renegociar'}
             </h3>
 
             <form onSubmit={handleAddDebt} className="space-y-3.5">
@@ -340,7 +414,7 @@ function DebtsContent() {
                   disabled={submitting}
                   className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  {submitting ? 'Salvando...' : 'Salvar Dívida'}
+                  {submitting ? 'Salvando...' : editingDebt ? 'Salvar Alterações' : 'Salvar Dívida'}
                 </button>
               </div>
             </form>
