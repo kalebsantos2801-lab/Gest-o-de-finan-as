@@ -1,0 +1,7 @@
+[build]
+command = "npm install --include=dev && npm run build"
+output_dir = ".next"
+
+[build.environment]
+NODE_VERSION = "20"
+NPM_VERSION = "10"
