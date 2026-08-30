@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Database, Copy, Check, ExternalLink, ShieldCheck, X } from 'lucide-react';
 import { isSupabaseConfigured } from '@/lib/supabase';
+import { SUPABASE_SCHEMA_SQL } from '@/lib/supabase-schema-sql';
 
 export function SupabaseConfigModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
@@ -11,9 +12,7 @@ export function SupabaseConfigModal({ isOpen, onClose }: { isOpen: boolean; onCl
 
   const handleCopySql = async () => {
     try {
-      const response = await fetch('/api/schema-sql');
-      const sqlText = await response.text();
-      await navigator.clipboard.writeText(sqlText);
+      await navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL);
       setCopied(true);
       setTimeout(() => setCopied(false), 3000);
     } catch {

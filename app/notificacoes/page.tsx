@@ -8,6 +8,7 @@ import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { AppNotification } from '@/types/database';
 import { triggerNativeNotification, playBellChime, getNotificationPermission, decodeNotificationMessage } from '@/lib/push-notifications';
+import { checkAndSendNotifications } from '@/lib/notification-checker';
 import { 
   Bell, 
   Check, 
@@ -94,7 +95,7 @@ function NotificationsContent() {
     if (!user) return;
     setRefreshing(true);
     try {
-      await fetch(`/api/notifications/check-and-send?userId=${user.id}`);
+      await checkAndSendNotifications(user.id);
       await loadNotifications();
     } catch (err) {
       console.error('Error running manual check:', err);

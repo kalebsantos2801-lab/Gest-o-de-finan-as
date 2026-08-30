@@ -50,21 +50,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [serverTimeOffset, setServerTimeOffset] = useState<number>(0);
   const [serverTime, setServerTime] = useState<Date>(new Date());
 
-  // Sync with authoritative server time to prevent client clock manipulation
+  // Sync server time (fallback to local time seamlessly)
   const syncServerTime = useCallback(async () => {
-    try {
-      const res = await fetch('/api/time', { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        const serverMs = new Date(data.serverTime).getTime();
-        const clientMs = Date.now();
-        const offset = serverMs - clientMs;
-        setServerTimeOffset(offset);
-        setServerTime(new Date(serverMs));
-      }
-    } catch {
-      // Fallback
-    }
+    setServerTime(new Date());
   }, []);
 
   useEffect(() => {

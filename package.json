@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node -e \"const fs = require('fs'); fs.rmSync('.next/cache', { recursive: true, force: true });\" && NODE_ENV=production next build && node -e \"const fs = require('fs'); fs.rmSync('.next/cache', { recursive: true, force: true }); fs.rmSync('.next/trace', { recursive: true, force: true });\"",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "clean": "next clean"

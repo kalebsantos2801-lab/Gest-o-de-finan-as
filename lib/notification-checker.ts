@@ -1,21 +1,16 @@
-import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { encodeNotificationMessage } from '@/lib/push-notifications';
 
-
-export async function GET(req: NextRequest) {
-  return handleCheckAndSend(req);
+export interface NotificationCheckResult {
+  success: boolean;
+  processed?: number;
+  sent: number;
+  notifications: Array<{ title: string; message: string; target_url: string }>;
+  error?: string;
 }
 
-export async function POST(req: NextRequest) {
-  return handleCheckAndSend(req);
-}
-
-async function handleCheckAndSend(req: NextRequest) {
+export async function checkAndSendNotifications(targetUserId?: string): Promise<NotificationCheckResult> {
   try {
-    const { searchParams } = new URL(req.url);
-    const targetUserId = searchParams.get('userId');
-
     // 1. Fetch target profiles or all profiles if no specific user requested
     let profilesQuery = supabase.from('profiles').select('id, family_id, full_name, email');
     if (targetUserId) {
@@ -24,12 +19,11 @@ async function handleCheckAndSend(req: NextRequest) {
     const { data: profiles, error: pErr } = await profilesQuery;
 
     if (pErr || !profiles || profiles.length === 0) {
-      return NextResponse.json({ success: true, processed: 0, sent: 0, message: 'Nenhum usuário encontrado.' });
+      return { success: true, processed: 0, sent: 0, notifications: [] };
     }
 
     const todayStr = new Date().toISOString().split('T')[0];
     const now = new Date();
-    const currentHour = now.getHours();
 
     let totalNotificationsSent = 0;
     const detailsSent: Array<{ title: string; message: string; target_url: string }> = [];
@@ -54,14 +48,6 @@ async function handleCheckAndSend(req: NextRequest) {
       const loansEnabled = settings?.loans_enabled ?? true;
       const budgetEnabled = settings?.budget_enabled ?? true;
       const trialEnabled = settings?.trial_enabled ?? true;
-
-      // Respect quiet hours (default 21:00 to 08:00) unless forced
-      const qStart = parseInt(settings?.quiet_hours_start?.split(':')[0] || '21', 10);
-      const qEnd = parseInt(settings?.quiet_hours_end?.split(':')[0] || '8', 10);
-
-      const isQuietHours = qStart > qEnd 
-        ? (currentHour >= qStart || currentHour < qEnd)
-        : (currentHour >= qStart && currentHour < qEnd);
 
       // Helper to check if already logged in notifications table using encoded metadata
       const isAlreadyNotified = async (type: string, refId: string) => {
@@ -98,7 +84,6 @@ async function handleCheckAndSend(req: NextRequest) {
           // Encode type, refId, and targetUrl into the message column directly
           const encodedMessage = encodeNotificationMessage(message, type, refId, targetUrl);
 
-          // Insert into notifications with fallback/existing columns only to prevent PGRST204 errors
           const { error: notifErr } = await supabase.from('notifications').insert({
             user_id: userId,
             family_id: familyId,
@@ -138,7 +123,6 @@ async function handleCheckAndSend(req: NextRequest) {
             const amountFormatted = Number(expense.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
 
             if (diffDays < 0) {
-              // Vencida
               await sendNotification(
                 'conta_vencida',
                 `expense_${expense.id}_overdue_${todayStr}`,
@@ -147,7 +131,6 @@ async function handleCheckAndSend(req: NextRequest) {
                 '/contas'
               );
             } else if (diffDays === 0) {
-              // Vence Hoje
               await sendNotification(
                 'conta_hoje',
                 `expense_${expense.id}_today_${todayStr}`,
@@ -156,7 +139,6 @@ async function handleCheckAndSend(req: NextRequest) {
                 '/contas'
               );
             } else if (diffDays === 1) {
-              // Vence amanhã
               await sendNotification(
                 'conta_amanha',
                 `expense_${expense.id}_due1d`,
@@ -165,7 +147,6 @@ async function handleCheckAndSend(req: NextRequest) {
                 '/contas'
               );
             } else if (diffDays <= 3) {
-              // Vence em 3 dias
               await sendNotification(
                 'conta_3dias',
                 `expense_${expense.id}_due3d`,
@@ -199,7 +180,6 @@ async function handleCheckAndSend(req: NextRequest) {
             const diffDays = dueDay - currentDay;
 
             if (diffDays === 1) {
-              // Fatura próxima do vencimento (Amanhã)
               await sendNotification(
                 'fatura_amanha',
                 `card_${card.id}_due1d_${now.getMonth()}_${now.getFullYear()}`,
@@ -208,7 +188,6 @@ async function handleCheckAndSend(req: NextRequest) {
                 '/cartoes'
               );
             } else if (diffDays === 0) {
-              // Fatura pendente (Hoje)
               await sendNotification(
                 'fatura_pendente',
                 `card_${card.id}_dueToday_${now.getMonth()}_${now.getFullYear()}`,
@@ -217,7 +196,6 @@ async function handleCheckAndSend(req: NextRequest) {
                 '/cartoes'
               );
             } else if (diffDays < 0 && Math.abs(diffDays) < 15) {
-              // Fatura Vencida
               await sendNotification(
                 'fatura_vencida',
                 `card_${card.id}_overdue_${now.getMonth()}_${now.getFullYear()}`,
@@ -320,7 +298,6 @@ async function handleCheckAndSend(req: NextRequest) {
               const percent = Math.round((spent / limit) * 100);
 
               if (spent > limit) {
-                // Ultrapassado
                 await sendNotification(
                   'orcamento_ultrapassado',
                   `budget_${b.id}_exceeded_${currentMonth}_${currentYear}`,
@@ -329,7 +306,6 @@ async function handleCheckAndSend(req: NextRequest) {
                   '/despesas'
                 );
               } else if (percent >= 80) {
-                // 80% atingido
                 await sendNotification(
                   'orcamento_80',
                   `budget_${b.id}_80percent_${currentMonth}_${currentYear}`,
@@ -386,14 +362,13 @@ async function handleCheckAndSend(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({
+    return {
       success: true,
       sent: totalNotificationsSent,
       notifications: detailsSent,
-      timestamp: new Date().toISOString(),
-    });
+    };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Erro no processamento de notificações';
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+    return { success: false, sent: 0, notifications: [], error: msg };
   }
 }

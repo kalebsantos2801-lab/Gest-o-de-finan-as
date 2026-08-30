@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { triggerNativeNotification, decodeNotificationMessage, playBellChime } from '@/lib/push-notifications';
+import { checkAndSendNotifications } from '@/lib/notification-checker';
 import { supabase } from '@/lib/supabase';
 import { Bell, X, Volume2, ExternalLink } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -29,19 +30,16 @@ export function NotificationManager() {
     lastCheckRef.current = now;
 
     try {
-      const res = await fetch(`/api/notifications/check-and-send?userId=${user.id}`, { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.sent > 0 && Array.isArray(data.notifications)) {
-          // Trigger native push / browser notification for newly sent notifications
-          for (const item of data.notifications) {
-            triggerNativeNotification({
-              title: item.title,
-              body: item.message,
-              url: item.target_url || '/notificacoes',
-              silent: true,
-            });
-          }
+      const data = await checkAndSendNotifications(user.id);
+      if (data.sent > 0 && Array.isArray(data.notifications)) {
+        // Trigger native push / browser notification for newly sent notifications
+        for (const item of data.notifications) {
+          triggerNativeNotification({
+            title: item.title,
+            body: item.message,
+            url: item.target_url || '/notificacoes',
+            silent: true,
+          });
         }
       }
     } catch (err) {
