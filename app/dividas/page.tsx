@@ -22,18 +22,16 @@ export default function DebtsPage() {
 
 function DebtsContent() {
   const { profile, user } = useAuth();
-  const [debts, setDebts] = useState<Debt[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [debts, setDebts] = useState<Debt[]>(() => memoryCache.get<Debt[]>('debts_list') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('debts_list'));
   const [modalOpen, setModalOpen] = useState(false);
   const [editingDebt, setEditingDebt] = useState<Debt | null>(null);
 
-  useEffect(() => {
-    const cached = memoryCache.get<Debt[]>('debts_list');
-    if (cached) {
-      setDebts(cached);
-      setLoading(false);
-    }
-  }, []);
+  // Modal states for Quitar e Excluir
+  const [debtToSettle, setDebtToSettle] = useState<Debt | null>(null);
+  const [settling, setSettling] = useState(false);
+  const [debtToDelete, setDebtToDelete] = useState<Debt | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [creditor, setCreditor] = useState('');
   const [description, setDescription] = useState('Empréstimo Pessoal');
@@ -105,7 +103,16 @@ function DebtsContent() {
   }, [profile?.family_id]);
 
   useEffect(() => {
-    loadDebts();
+    const hasCache = memoryCache.get('debts_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadDebts();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadDebts();
+    }
   }, [loadDebts]);
 
   const handleAddDebt = async (e: React.FormEvent) => {
@@ -190,15 +197,37 @@ function DebtsContent() {
     }
   };
 
-  const handleSettle = async (debt: Debt) => {
-    await supabase.from('debts').update({ status: 'settled', paid_amount: debt.total_amount }).eq('id', debt.id);
-    await loadDebts();
+  const handleConfirmSettle = async () => {
+    if (!debtToSettle) return;
+    setSettling(true);
+    try {
+      await supabase.from('debts').update({ status: 'settled', paid_amount: debtToSettle.total_amount }).eq('id', debtToSettle.id);
+      memoryCache.delete('debts_list');
+      setDebtToSettle(null);
+      await loadDebts();
+    } catch (err) {
+      console.error('Error settling debt:', err);
+      alert('Erro ao quitar dívida.');
+    } finally {
+      setSettling(false);
+    }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Excluir este registro de dívida?')) return;
-    await supabase.from('debts').delete().eq('id', id);
-    setDebts(prev => prev.filter(d => d.id !== id));
+  const handleConfirmDelete = async () => {
+    if (!debtToDelete) return;
+    setDeleting(true);
+    try {
+      await supabase.from('debts').delete().eq('id', debtToDelete.id);
+      setDebts(prev => prev.filter(d => d.id !== debtToDelete.id));
+      memoryCache.delete('debts_list');
+      setDebtToDelete(null);
+      await loadDebts();
+    } catch (err) {
+      console.error('Error deleting debt:', err);
+      alert('Erro ao excluir dívida.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const pendingDebtsTotal = debts
@@ -223,7 +252,7 @@ function DebtsContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-start sm:justify-end">
             <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2.5 text-right">
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Total a Quitar</span>
               <span className="text-base sm:text-lg font-extrabold text-rose-400 font-mono">
@@ -297,22 +326,23 @@ function DebtsContent() {
                   <div className="flex items-center gap-2">
                     {debt.status !== 'settled' && (
                       <button
-                        onClick={() => handleSettle(debt)}
-                        className="px-3 py-1.5 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 rounded-xl text-xs font-bold transition"
+                        onClick={() => setDebtToSettle(debt)}
+                        className="px-3 py-1.5 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 rounded-xl text-xs font-bold transition cursor-pointer"
                       >
                         Quitar
                       </button>
                     )}
                     <button
                       onClick={() => handleStartEdit(debt)}
-                      className="p-1.5 text-slate-400 hover:text-indigo-400 transition rounded-lg hover:bg-white/5"
+                      className="p-1.5 text-slate-400 hover:text-indigo-400 transition rounded-lg hover:bg-white/5 cursor-pointer"
                       title="Editar"
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
                     <button
-                      onClick={() => handleDelete(debt.id)}
-                      className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5"
+                      onClick={() => setDebtToDelete(debt)}
+                      className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5 cursor-pointer"
+                      title="Excluir"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -418,6 +448,93 @@ function DebtsContent() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Modal Confirmação de Quitação */}
+      {debtToSettle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Quitar Dívida</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja marcar a dívida com <strong className="text-white">&quot;{debtToSettle.creditor}&quot;</strong> no valor de <strong className="text-emerald-400 font-mono">R$ {Number(debtToSettle.total_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong> como <span className="text-emerald-400 font-bold">QUITADA</span>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={settling}
+                onClick={() => setDebtToSettle(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={settling}
+                onClick={handleConfirmSettle}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-emerald-600/25 border border-emerald-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {settling ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Quitando...</span>
+                  </>
+                ) : (
+                  'Sim, Quitar'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmação de Exclusão */}
+      {debtToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Excluir Dívida</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja excluir permanentemente o registro de dívida com <strong className="text-white">&quot;{debtToDelete.creditor}&quot;</strong>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setDebtToDelete(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Excluindo...</span>
+                  </>
+                ) : (
+                  'Sim, Excluir'
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

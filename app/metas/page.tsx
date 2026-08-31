@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { memoryCache } from '@/lib/cache';
 import { Goal } from '@/types/database';
 import { Target, Plus, Trash2, PlusCircle, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -21,8 +22,8 @@ export default function GoalsPage() {
 
 function GoalsContent() {
   const { profile, user } = useAuth();
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [goals, setGoals] = useState<Goal[]>(() => memoryCache.get<Goal[]>('goals_list') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('goals_list'));
   const [modalOpen, setModalOpen] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -39,14 +40,20 @@ function GoalsContent() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const cached = memoryCache.get<Goal[]>('goals_list');
+    if (!cached) {
+      setLoading(true);
+    }
     try {
       const { data } = await supabase
         .from('goals')
         .select('*')
         .eq('family_id', profile.family_id)
         .order('created_at', { ascending: false });
-      if (data) setGoals(data as Goal[]);
+      if (data) {
+        setGoals(data as Goal[]);
+        memoryCache.set('goals_list', data);
+      }
     } catch (err) {
       console.error('Error fetching goals:', err);
     } finally {
@@ -55,7 +62,16 @@ function GoalsContent() {
   }, [profile?.family_id]);
 
   useEffect(() => {
-    loadGoals();
+    const hasCache = memoryCache.get('goals_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadGoals();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadGoals();
+    }
   }, [loadGoals]);
 
   const handleAddGoal = async (e: React.FormEvent) => {
@@ -90,6 +106,8 @@ function GoalsContent() {
       if (error) {
         setErrorMsg(error.message);
       } else {
+        memoryCache.delete('goals_list');
+        memoryCache.delete('dashboard_goals');
         setTitle('');
         setTargetAmount('');
         setCurrentAmount('');
@@ -115,13 +133,18 @@ function GoalsContent() {
       .update({ current_amount: Number(goal.current_amount || 0) + addVal })
       .eq('id', goal.id);
 
+    memoryCache.delete('goals_list');
+    memoryCache.delete('dashboard_goals');
     await loadGoals();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Excluir esta meta?')) return;
     await supabase.from('goals').delete().eq('id', id);
+    memoryCache.delete('goals_list');
+    memoryCache.delete('dashboard_goals');
     setGoals(prev => prev.filter(g => g.id !== id));
+    await loadGoals();
   };
 
   const totalTarget = goals.reduce((acc, curr) => acc + Number(curr.target_amount || 0), 0);
@@ -145,7 +168,7 @@ function GoalsContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-start sm:justify-end">
             <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2.5 text-right">
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Total Acumulado</span>
               <span className="text-base sm:text-lg font-extrabold text-amber-400 font-mono">

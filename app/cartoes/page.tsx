@@ -24,7 +24,10 @@ import {
   Filter, 
   ArrowUpRight,
   ShieldCheck,
-  Receipt
+  Receipt,
+  Edit3,
+  CheckCircle2,
+  X
 } from 'lucide-react';
 
 export default function CardsPage() {
@@ -262,22 +265,15 @@ function getBankStyle(cardName: string): BankStyle {
 
 function CardsContent() {
   const { profile, user } = useAuth();
-  const [cards, setCards] = useState<CreditCardType[]>([]);
-  const [purchases, setPurchases] = useState<CreditCardPurchase[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const cachedCards = memoryCache.get<CreditCardType[]>('cards_list');
-    const cachedPurchases = memoryCache.get<CreditCardPurchase[]>('cards_purchases');
-    if (cachedCards) setCards(cachedCards);
-    if (cachedPurchases) setPurchases(cachedPurchases);
-    if (cachedCards) setLoading(false);
-  }, []);
+  const [cards, setCards] = useState<CreditCardType[]>(() => memoryCache.get<CreditCardType[]>('cards_list') || []);
+  const [purchases, setPurchases] = useState<CreditCardPurchase[]>(() => memoryCache.get<CreditCardPurchase[]>('cards_purchases') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('cards_list'));
 
   const [filterCardId, setFilterCardId] = useState<string>('ALL');
   
   // Card Modal
   const [cardModalOpen, setCardModalOpen] = useState(false);
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [cardName, setCardName] = useState('Nubank');
   const [customCardName, setCustomCardName] = useState('');
   const [lastDigits, setLastDigits] = useState('');
@@ -285,8 +281,39 @@ function CardsContent() {
   const [closingDay, setClosingDay] = useState(1);
   const [dueDay, setDueDay] = useState(10);
 
+  const handleOpenNewCardModal = () => {
+    setEditingCardId(null);
+    setCardName('Nubank');
+    setCustomCardName('');
+    setLastDigits('');
+    setCreditLimit('');
+    setClosingDay(1);
+    setDueDay(10);
+    setErrorMsg('');
+    setCardModalOpen(true);
+  };
+
+  const handleOpenEditCardModal = (card: CreditCardType) => {
+    setEditingCardId(card.id);
+    const isStandard = Object.keys(CARD_COLORS).includes(card.name);
+    if (isStandard) {
+      setCardName(card.name);
+      setCustomCardName('');
+    } else {
+      setCardName('Outros');
+      setCustomCardName(card.name);
+    }
+    setLastDigits(card.last_digits || '');
+    setCreditLimit(card.credit_limit !== undefined && card.credit_limit !== null ? String(card.credit_limit) : '');
+    setClosingDay(card.closing_day || 1);
+    setDueDay(card.due_day || 10);
+    setErrorMsg('');
+    setCardModalOpen(true);
+  };
+
   // Purchase Modal
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
   const [selectedCardId, setSelectedCardId] = useState('');
   const [purchaseDesc, setPurchaseDesc] = useState('Mercado');
   const [customPurchaseDesc, setCustomPurchaseDesc] = useState('');
@@ -294,6 +321,146 @@ function CardsContent() {
   const [purchaseCategory, setPurchaseCategory] = useState('Geral');
   const [customCategory, setCustomCategory] = useState('');
   const [installments, setInstallments] = useState(1);
+  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
+
+  // Settle / Payment Modal State
+  const [settleModalOpen, setSettleModalOpen] = useState(false);
+  const [selectedCardForSettle, setSelectedCardForSettle] = useState<CreditCardType | null>(null);
+  const [confirmSettleModalOpen, setConfirmSettleModalOpen] = useState(false);
+  const [settleAmount, setSettleAmount] = useState('');
+  const [settleType, setSettleType] = useState<'total' | 'partial'>('total');
+  const [selectedPurchaseIds, setSelectedPurchaseIds] = useState<string[]>([]);
+  const [settling, setSettling] = useState(false);
+
+  const handleOpenSettleModal = (card?: CreditCardType) => {
+    if (card) {
+      setSelectedCardForSettle(card);
+      setSettleAmount(String(card.current_bill || 0));
+    } else if (cards.length > 0) {
+      setSelectedCardForSettle(cards[0]);
+      setSettleAmount(String(cards[0].current_bill || 0));
+    }
+    setSettleType('total');
+    setSelectedPurchaseIds([]);
+    setSettleModalOpen(true);
+  };
+
+  const handleTogglePurchaseSettle = (pId: string) => {
+    if (!selectedCardForSettle) return;
+    const cardPurchases = purchases.filter(p => p.card_id === selectedCardForSettle.id);
+    
+    let newSelected: string[];
+    if (selectedPurchaseIds.includes(pId)) {
+      newSelected = selectedPurchaseIds.filter(id => id !== pId);
+    } else {
+      newSelected = [...selectedPurchaseIds, pId];
+    }
+    setSelectedPurchaseIds(newSelected);
+
+    const sum = cardPurchases
+      .filter(p => newSelected.includes(p.id))
+      .reduce((acc, p) => acc + (p.total_installments > 1 ? p.amount / p.total_installments : p.amount), 0);
+
+    setSettleAmount(sum > 0 ? sum.toFixed(2).replace('.', ',') : '');
+  };
+
+  const handleConfirmSettle = async () => {
+    if (!selectedCardForSettle) return;
+    const currentBill = Number(selectedCardForSettle.current_bill || 0);
+    const rawAmountStr = settleAmount.replace(',', '.');
+    const parsedAmount = settleType === 'total' ? currentBill : parseFloat(rawAmountStr);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      setErrorMsg('Informe um valor válido para quitação.');
+      return;
+    }
+
+    if (parsedAmount > currentBill && settleType === 'total') {
+      setErrorMsg('O valor da quitação não pode ser superior à fatura atual.');
+      return;
+    }
+
+    setSettling(true);
+    try {
+      const newBill = Math.max(0, currentBill - parsedAmount);
+
+      if (settleType === 'partial' && selectedPurchaseIds.length > 0) {
+        await supabase
+          .from('credit_card_purchases')
+          .delete()
+          .in('id', selectedPurchaseIds);
+      } else if (settleType === 'total') {
+        await supabase
+          .from('credit_card_purchases')
+          .delete()
+          .eq('card_id', selectedCardForSettle.id);
+      }
+
+      const { error } = await supabase
+        .from('credit_cards')
+        .update({ current_bill: newBill })
+        .eq('id', selectedCardForSettle.id);
+
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setConfirmSettleModalOpen(false);
+        setSettleModalOpen(false);
+        setSelectedCardForSettle(null);
+        setSettleAmount('');
+        setSelectedPurchaseIds([]);
+        memoryCache.set('cards_list', null);
+        memoryCache.set('cards_purchases', null);
+        await loadData();
+      }
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erro ao quitar fatura');
+    } finally {
+      setSettling(false);
+    }
+  };
+
+  const handleOpenNewPurchaseModal = () => {
+    setEditingPurchaseId(null);
+    if (cards.length > 0 && !selectedCardId) {
+      setSelectedCardId(cards[0].id);
+    }
+    setPurchaseDesc('Mercado');
+    setCustomPurchaseDesc('');
+    setPurchaseAmount('');
+    setPurchaseCategory('Geral');
+    setCustomCategory('');
+    setInstallments(1);
+    setPurchaseDate(new Date().toISOString().split('T')[0]);
+    setErrorMsg('');
+    setPurchaseModalOpen(true);
+  };
+
+  const handleOpenEditPurchaseModal = (pur: CreditCardPurchase) => {
+    setEditingPurchaseId(pur.id);
+    setSelectedCardId(pur.card_id);
+    const isStdDesc = ['Mercado', 'Combustível', 'Restaurante', 'Farmácia', 'Assinatura', 'Eletrônicos'].includes(pur.description);
+    if (isStdDesc) {
+      setPurchaseDesc(pur.description);
+      setCustomPurchaseDesc('');
+    } else {
+      setPurchaseDesc('Outros');
+      setCustomPurchaseDesc(pur.description);
+    }
+    setPurchaseAmount(pur.amount !== undefined && pur.amount !== null ? String(pur.amount) : '');
+    const isStdCat = ['Alimentação', 'Transporte', 'Saúde', 'Educação', 'Lazer', 'Serviços'].includes(pur.category || '');
+    if (isStdCat) {
+      setPurchaseCategory(pur.category || 'Geral');
+      setCustomCategory('');
+    } else {
+      setPurchaseCategory('Outros');
+      setCustomCategory(pur.category || '');
+    }
+    setInstallments(pur.total_installments || 1);
+    setPurchaseDate(pur.purchase_date ? pur.purchase_date.split('T')[0] : new Date().toISOString().split('T')[0]);
+    setErrorMsg('');
+    setPurchaseModalOpen(true);
+  };
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -316,8 +483,8 @@ function CardsContent() {
       if (cardsData) {
         setCards(cardsData as CreditCardType[]);
         memoryCache.set('cards_list', cardsData);
-        if (cardsData.length > 0 && !selectedCardId) {
-          setSelectedCardId(cardsData[0].id);
+        if (cardsData.length > 0) {
+          setSelectedCardId(prev => prev || cardsData[0].id);
         }
       }
 
@@ -335,13 +502,22 @@ function CardsContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id, selectedCardId]);
+  }, [profile?.family_id]);
 
   useEffect(() => {
-    loadData();
+    const hasCache = memoryCache.get('cards_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadData();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadData();
+    }
   }, [loadData]);
 
-  const handleAddCard = async (e: React.FormEvent) => {
+  const handleSaveCard = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const isCardNameEmpty = cardName === 'Outros' ? !customCardName.trim() : !cardName.trim();
@@ -359,37 +535,52 @@ function CardsContent() {
       const finalCardName = cardName === 'Outros' ? customCardName.trim() : cardName;
       const finalColor = CARD_COLORS[cardName] || '#8b5cf6';
 
-      const { error } = await supabase.from('credit_cards').insert({
-        family_id: profile?.family_id,
-        user_id: user?.id,
-        name: finalCardName.trim(),
-        last_digits: lastDigits.trim() || null,
-        credit_limit: parseFloat(creditLimit.replace(',', '.')),
-        current_bill: 0,
-        closing_day: Number(closingDay),
-        due_day: Number(dueDay),
-        color: finalColor,
-      });
+      if (editingCardId) {
+        const { error } = await supabase.from('credit_cards').update({
+          name: finalCardName.trim(),
+          last_digits: lastDigits.trim() || null,
+          credit_limit: parseFloat(creditLimit.replace(',', '.')),
+          closing_day: Number(closingDay),
+          due_day: Number(dueDay),
+          color: finalColor,
+        }).eq('id', editingCardId);
 
-      if (error) {
-        setErrorMsg(error.message);
+        if (error) {
+          setErrorMsg(error.message);
+        } else {
+          setCardModalOpen(false);
+          memoryCache.set('cards_list', null);
+          await loadData();
+        }
       } else {
-        setCardName('Nubank');
-        setCustomCardName('');
-        setLastDigits('');
-        setCreditLimit('');
-        setErrorMsg('');
-        setCardModalOpen(false);
-        await loadData();
+        const { error } = await supabase.from('credit_cards').insert({
+          family_id: profile?.family_id,
+          user_id: user?.id,
+          name: finalCardName.trim(),
+          last_digits: lastDigits.trim() || null,
+          credit_limit: parseFloat(creditLimit.replace(',', '.')),
+          current_bill: 0,
+          closing_day: Number(closingDay),
+          due_day: Number(dueDay),
+          color: finalColor,
+        });
+
+        if (error) {
+          setErrorMsg(error.message);
+        } else {
+          setCardModalOpen(false);
+          memoryCache.set('cards_list', null);
+          await loadData();
+        }
       }
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao cadastrar cartão');
+      setErrorMsg(err instanceof Error ? err.message : 'Erro ao salvar cartão');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleAddPurchase = async (e: React.FormEvent) => {
+  const handleSavePurchase = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const isDescriptionEmpty = purchaseDesc === 'Outros' ? !customPurchaseDesc.trim() : !purchaseDesc.trim();
@@ -425,39 +616,86 @@ function CardsContent() {
       const finalCategory = purchaseCategory === 'Outros' ? customCategory.trim() : purchaseCategory;
       const finalDescription = purchaseDesc === 'Outros' ? customPurchaseDesc.trim() : purchaseDesc;
 
-      const { error } = await supabase.from('credit_card_purchases').insert({
-        family_id: profile?.family_id,
-        card_id: selectedCardId,
-        description: finalDescription.trim(),
-        amount: parsedAmount,
-        category: finalCategory,
-        purchase_date: new Date().toISOString().split('T')[0],
-        total_installments: Number(installments),
-      });
+      if (editingPurchaseId) {
+        const oldPur = purchases.find(p => p.id === editingPurchaseId);
+        const oldAmount = oldPur ? Number(oldPur.amount || 0) : 0;
+        const oldCardId = oldPur ? oldPur.card_id : null;
 
-      if (error) {
-        setErrorMsg(error.message);
-      } else {
-        // Update current bill on card
-        const card = cards.find(c => c.id === selectedCardId);
-        if (card) {
-          await supabase
-            .from('credit_cards')
-            .update({ current_bill: Number(card.current_bill || 0) + parsedAmount })
-            .eq('id', selectedCardId);
+        const { error } = await supabase.from('credit_card_purchases').update({
+          card_id: selectedCardId,
+          description: finalDescription.trim(),
+          amount: parsedAmount,
+          category: finalCategory,
+          total_installments: Number(installments),
+          purchase_date: purchaseDate,
+        }).eq('id', editingPurchaseId);
+
+        if (error) {
+          setErrorMsg(error.message);
+        } else {
+          if (oldCardId === selectedCardId) {
+            const diff = parsedAmount - oldAmount;
+            if (diff !== 0) {
+              const card = cards.find(c => c.id === selectedCardId);
+              if (card) {
+                const newBill = Math.max(0, Number(card.current_bill || 0) + diff);
+                await supabase.from('credit_cards').update({ current_bill: newBill }).eq('id', selectedCardId);
+              }
+            }
+          } else {
+            if (oldCardId) {
+              const oldCard = cards.find(c => c.id === oldCardId);
+              if (oldCard) {
+                const newBillOld = Math.max(0, Number(oldCard.current_bill || 0) - oldAmount);
+                await supabase.from('credit_cards').update({ current_bill: newBillOld }).eq('id', oldCardId);
+              }
+            }
+            const newCard = cards.find(c => c.id === selectedCardId);
+            if (newCard) {
+              const newBillNew = Number(newCard.current_bill || 0) + parsedAmount;
+              await supabase.from('credit_cards').update({ current_bill: newBillNew }).eq('id', selectedCardId);
+            }
+          }
+
+          setPurchaseModalOpen(false);
+          memoryCache.set('cards_purchases', null);
+          await loadData();
         }
+      } else {
+        const { error } = await supabase.from('credit_card_purchases').insert({
+          family_id: profile?.family_id,
+          card_id: selectedCardId,
+          description: finalDescription.trim(),
+          amount: parsedAmount,
+          category: finalCategory,
+          purchase_date: purchaseDate,
+          total_installments: Number(installments),
+        });
 
-        setPurchaseDesc('Mercado');
-        setCustomPurchaseDesc('');
-        setPurchaseCategory('Geral');
-        setCustomCategory('');
-        setPurchaseAmount('');
-        setErrorMsg('');
-        setPurchaseModalOpen(false);
-        await loadData();
+        if (error) {
+          setErrorMsg(error.message);
+        } else {
+          const card = cards.find(c => c.id === selectedCardId);
+          if (card) {
+            const installmentValue = parsedAmount / Number(installments);
+            await supabase
+              .from('credit_cards')
+              .update({ current_bill: Number(card.current_bill || 0) + installmentValue })
+              .eq('id', selectedCardId);
+          }
+
+          setPurchaseDesc('Mercado');
+          setCustomPurchaseDesc('');
+          setPurchaseCategory('Geral');
+          setCustomCategory('');
+          setPurchaseAmount('');
+          setErrorMsg('');
+          setPurchaseModalOpen(false);
+          await loadData();
+        }
       }
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao lançar compra');
+      setErrorMsg(err instanceof Error ? err.message : 'Erro ao salvar compra');
     } finally {
       setSubmitting(false);
     }
@@ -522,12 +760,7 @@ function CardsContent() {
           <div className="flex items-center gap-2.5 relative z-10">
             {cards.length > 0 && (
               <button
-                onClick={() => {
-                  if (cards.length > 0 && !selectedCardId) {
-                    setSelectedCardId(cards[0].id);
-                  }
-                  setPurchaseModalOpen(true);
-                }}
+                onClick={handleOpenNewPurchaseModal}
                 className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs font-semibold rounded-xl transition cursor-pointer active:scale-95"
               >
                 <Plus className="w-4 h-4 text-purple-400" />
@@ -536,7 +769,7 @@ function CardsContent() {
             )}
 
             <button
-              onClick={() => setCardModalOpen(true)}
+              onClick={handleOpenNewCardModal}
               className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-purple-600/25 border border-purple-400/20 active:scale-[0.98] cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -574,7 +807,7 @@ function CardsContent() {
               Cadastre os cartões de crédito da família (Nubank, Inter, Itaú, Santander, etc) para organizar suas faturas e limites.
             </p>
             <button
-              onClick={() => setCardModalOpen(true)}
+              onClick={handleOpenNewCardModal}
               className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-purple-600/25 border border-purple-400/20"
             >
               + Cadastrar Primeiro Cartão
@@ -627,8 +860,15 @@ function CardsContent() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
-                      <Wifi className="w-3.5 h-3.5 text-slate-400/60 rotate-90" />
+                    <div className="flex items-center gap-1">
+                      <Wifi className="w-3.5 h-3.5 text-slate-400/60 rotate-90 mr-0.5" />
+                      <button
+                        onClick={() => handleOpenEditCardModal(card)}
+                        title="Editar Cartão"
+                        className="p-1 text-slate-400 hover:text-purple-400 transition rounded-lg hover:bg-white/10 cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         onClick={() => handleDeleteCard(card.id)}
                         title="Excluir Cartão"
@@ -675,14 +915,12 @@ function CardsContent() {
                     </div>
 
                     <button
-                      onClick={() => {
-                        setSelectedCardId(card.id);
-                        setPurchaseModalOpen(true);
-                      }}
-                      className="px-2 py-0.5 bg-white/10 hover:bg-white/20 text-white text-[10px] font-semibold rounded-md transition border border-white/10 flex items-center gap-1 active:scale-95 cursor-pointer"
+                      onClick={() => handleOpenSettleModal(card)}
+                      className="px-2 py-0.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold rounded-md transition border border-emerald-500/30 flex items-center gap-1 active:scale-95 cursor-pointer"
+                      title="Quitar Fatura"
                     >
-                      <Plus className="w-3 h-3 text-purple-300" />
-                      <span>Lançar</span>
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      <span>Quitar</span>
                     </button>
                   </div>
                 </div>
@@ -773,13 +1011,22 @@ function CardsContent() {
                       <span className="text-sm font-bold font-mono text-purple-400">
                         R$ {Number(purchase.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </span>
-                      <button
-                        onClick={() => handleDeletePurchase(purchase)}
-                        className="p-1 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/10"
-                        title="Remover Compra"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleOpenEditPurchaseModal(purchase)}
+                          className="p-1 text-slate-400 hover:text-purple-400 transition rounded-lg hover:bg-white/10"
+                          title="Editar Compra"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePurchase(purchase)}
+                          className="p-1 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/10"
+                          title="Remover Compra"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -795,7 +1042,7 @@ function CardsContent() {
           <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-md rounded-[28px] p-6 sm:p-7 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <CreditCard className="w-5 h-5 text-purple-400" />
-              <span>Novo Cartão de Crédito</span>
+              <span>{editingCardId ? 'Editar Cartão de Crédito' : 'Novo Cartão de Crédito'}</span>
             </h3>
 
             {errorMsg && (
@@ -805,7 +1052,7 @@ function CardsContent() {
               </div>
             )}
 
-            <form onSubmit={handleAddCard} className="space-y-3.5">
+            <form onSubmit={handleSaveCard} className="space-y-3.5">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-slate-300 ml-1">Nome / Instituição do Cartão</label>
                 <select
@@ -895,7 +1142,7 @@ function CardsContent() {
                   disabled={submitting}
                   className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-purple-600/25 border border-purple-400/20 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  {submitting ? 'Salvando...' : 'Salvar Cartão'}
+                  {submitting ? 'Salvando...' : (editingCardId ? 'Atualizar Cartão' : 'Salvar Cartão')}
                 </button>
               </div>
             </form>
@@ -909,7 +1156,7 @@ function CardsContent() {
           <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-md rounded-[28px] p-6 sm:p-7 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Plus className="w-5 h-5 text-purple-400" />
-              <span>Lançar Compra no Cartão</span>
+              <span>{editingPurchaseId ? 'Editar Compra na Fatura' : 'Lançar Compra no Cartão'}</span>
             </h3>
 
             {errorMsg && (
@@ -919,7 +1166,7 @@ function CardsContent() {
               </div>
             )}
 
-            <form onSubmit={handleAddPurchase} className="space-y-3.5">
+            <form onSubmit={handleSavePurchase} className="space-y-3.5">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-slate-300 ml-1">Cartão de Crédito</label>
                 <select
@@ -992,15 +1239,13 @@ function CardsContent() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-300 ml-1">Valor Total (R$)</label>
+                  <label className="text-xs font-medium text-slate-300 ml-1">Data da Compra</label>
                   <input
-                    type="number"
-                    step="0.01"
+                    type="date"
                     required
-                    value={purchaseAmount}
-                    onChange={(e) => setPurchaseAmount(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 font-mono"
+                    value={purchaseDate}
+                    onChange={(e) => setPurchaseDate(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
                   />
                 </div>
 
@@ -1017,6 +1262,51 @@ function CardsContent() {
                 </div>
               </div>
 
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-300 ml-1">Valor Total (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={purchaseAmount}
+                  onChange={(e) => setPurchaseAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full px-3.5 py-2.5 bg-white/[0.04] border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 font-mono"
+                />
+              </div>
+
+              {Number(installments) > 1 && Number(purchaseAmount) > 0 && (
+                <div className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between text-xs text-purple-300 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5" />
+                      Repartição das Parcelas ({installments}x)
+                    </span>
+                    <span className="font-mono font-bold">
+                      R$ {(Number(purchaseAmount) / Number(installments)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / mês
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 pt-0.5">
+                    {Array.from({ length: Math.min(Number(installments), 12) }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="flex flex-col items-center justify-center px-2 py-1 bg-white/5 border border-white/10 rounded-lg shrink-0 text-[10px]"
+                      >
+                        <span className="text-slate-400">{i + 1}ª</span>
+                        <span className="text-purple-300 font-mono font-semibold">
+                          {(Number(purchaseAmount) / Number(installments)).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                    ))}
+                    {Number(installments) > 12 && (
+                      <div className="px-2 py-1 text-[10px] text-slate-400 shrink-0">
+                        +{Number(installments) - 12} mais
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-end gap-2.5 pt-3 border-t border-white/10">
                 <button
                   type="button"
@@ -1030,10 +1320,286 @@ function CardsContent() {
                   disabled={submitting}
                   className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-purple-600/25 border border-purple-400/20 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  {submitting ? 'Salvando...' : 'Confirmar Compra'}
+                  {submitting ? 'Salvando...' : (editingPurchaseId ? 'Atualizar Compra' : 'Confirmar Compra')}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Settle / Pending Bills Modal */}
+      {settleModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-lg rounded-[28px] p-6 sm:p-7 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <span>Faturas Pendentes para Quitação</span>
+              </h3>
+              <button
+                onClick={() => setSettleModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-white transition rounded-lg hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+              {cards.filter(c => Number(c.current_bill || 0) > 0).length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-400/50 mx-auto" />
+                  <p className="text-sm font-semibold text-slate-200">Parabéns! Nenhuma fatura pendente</p>
+                  <p className="text-xs text-slate-500">Todos os seus cartões estão com fatura zerada ou quitada.</p>
+                </div>
+              ) : (
+                cards.filter(c => Number(c.current_bill || 0) > 0).map(card => {
+                  const bill = Number(card.current_bill || 0);
+                  return (
+                    <div
+                      key={card.id}
+                      className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-between gap-4 transition hover:bg-white/[0.06]"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold shrink-0">
+                          <CreditCard className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-white">{card.name}</h4>
+                          <p className="text-xs text-slate-400">
+                            Vencimento dia <strong className="text-slate-200">{card.due_day}</strong> • Final {card.last_digits || '----'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right flex items-center gap-3">
+                        <div>
+                          <div className="text-xs text-slate-400">Fatura Atual</div>
+                          <div className="text-sm font-mono font-extrabold text-emerald-400">
+                            R$ {bill.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSelectedCardForSettle(card);
+                            setConfirmSettleModalOpen(true);
+                          }}
+                          className="px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-emerald-600/20 cursor-pointer active:scale-95"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="flex justify-end pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setSettleModalOpen(false)}
+                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Settle / Payment */}
+      {confirmSettleModalOpen && selectedCardForSettle && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className={`bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full rounded-[28px] p-6 space-y-4 shadow-2xl transition-all ${settleType === 'partial' ? 'max-w-md sm:max-w-lg' : 'max-w-sm'}`}>
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1 text-center">
+              <h3 className="text-base font-bold text-white">Quitar Fatura - {selectedCardForSettle.name}</h3>
+              <p className="text-xs text-slate-300">
+                Fatura atual: <strong className="text-emerald-400 font-mono">R$ {Number(selectedCardForSettle.current_bill || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs rounded-xl flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 pt-1">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettleType('total');
+                    setSettleAmount(String(selectedCardForSettle.current_bill || 0));
+                    setSelectedPurchaseIds([]);
+                    setErrorMsg('');
+                  }}
+                  className={`py-2 px-3 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                    settleType === 'total'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                      : 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  Valor Total
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettleType('partial');
+                    setErrorMsg('');
+                  }}
+                  className={`py-2 px-3 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                    settleType === 'partial'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                      : 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  Valor Parcial
+                </button>
+              </div>
+
+              {settleType === 'partial' && (
+                <div className="space-y-3 pt-1">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-semibold text-slate-300">Valor a Pagar (R$)</label>
+                      {selectedPurchaseIds.length > 0 && (
+                        <span className="text-[10px] text-emerald-400 font-medium">
+                          {selectedPurchaseIds.length} lançamento(s) selecionado(s)
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={settleAmount}
+                      onChange={(e) => setSettleAmount(e.target.value)}
+                      placeholder="0,00"
+                      className="w-full px-3.5 py-2 bg-[#0b1329] border border-white/10 rounded-xl text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                    />
+                  </div>
+
+                  {/* Purchase History for Card */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                        <Receipt className="w-3.5 h-3.5 text-purple-400" />
+                        Lançamentos na Fatura
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cardPurchases = purchases.filter(p => p.card_id === selectedCardForSettle.id);
+                          if (selectedPurchaseIds.length === cardPurchases.length && cardPurchases.length > 0) {
+                            setSelectedPurchaseIds([]);
+                            setSettleAmount('0');
+                          } else {
+                            const allIds = cardPurchases.map(p => p.id);
+                            setSelectedPurchaseIds(allIds);
+                            const sum = cardPurchases.reduce((acc, p) => acc + (p.total_installments > 1 ? p.amount / p.total_installments : p.amount), 0);
+                            setSettleAmount(sum > 0 ? sum.toFixed(2).replace('.', ',') : '');
+                          }
+                        }}
+                        className="text-[10px] text-purple-300 hover:text-purple-200 font-medium cursor-pointer"
+                      >
+                        {selectedPurchaseIds.length === purchases.filter(p => p.card_id === selectedCardForSettle.id).length && purchases.filter(p => p.card_id === selectedCardForSettle.id).length > 0
+                          ? 'Desmarcar todos'
+                          : 'Selecionar todos'}
+                      </button>
+                    </div>
+
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 text-left">
+                      {purchases.filter(p => p.card_id === selectedCardForSettle.id).length === 0 ? (
+                        <div className="py-6 text-center text-xs text-slate-500 bg-white/[0.02] border border-white/5 rounded-xl">
+                          Nenhum lançamento individual encontrado para este cartão.
+                        </div>
+                      ) : (
+                        purchases
+                          .filter(p => p.card_id === selectedCardForSettle.id)
+                          .map(pur => {
+                            const isSelected = selectedPurchaseIds.includes(pur.id);
+                            const itemVal = pur.total_installments > 1 ? (pur.amount / pur.total_installments) : pur.amount;
+                            const dateStr = pur.purchase_date ? new Date(pur.purchase_date + 'T00:00:00').toLocaleDateString('pt-BR') : 'Sem data';
+
+                            return (
+                              <div
+                                key={pur.id}
+                                onClick={() => handleTogglePurchaseSettle(pur.id)}
+                                className={`p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 cursor-pointer transition ${
+                                  isSelected
+                                    ? 'bg-emerald-500/15 border-emerald-500/40 text-white'
+                                    : 'bg-white/[0.03] border-white/10 hover:bg-white/[0.06] text-slate-300'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 overflow-hidden">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {}} // Handled by parent div onClick
+                                    className="w-4 h-4 rounded border-white/20 text-emerald-500 focus:ring-emerald-500/50 bg-white/5 cursor-pointer shrink-0"
+                                  />
+                                  <div className="truncate">
+                                    <div className="font-semibold text-white truncate text-xs">{pur.description}</div>
+                                    <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                                      <span>{dateStr}</span>
+                                      {pur.category && <span>• {pur.category}</span>}
+                                      {pur.total_installments > 1 && (
+                                        <span className="text-purple-300 font-medium">({pur.total_installments}x)</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-right shrink-0">
+                                  <div className="font-mono font-bold text-emerald-400 text-xs">
+                                    R$ {itemVal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </div>
+                                  {pur.total_installments > 1 && (
+                                    <div className="text-[9px] text-slate-500 font-mono">
+                                      Tot: R$ {Number(pur.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={settling}
+                onClick={() => setConfirmSettleModalOpen(false)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={settling}
+                onClick={handleConfirmSettle}
+                className="flex-1 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-emerald-600/25 border border-emerald-400/20 cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                {settling ? 'Processando...' : 'Confirmar Pagamento'}
+              </button>
+            </div>
           </div>
         </div>
       )}

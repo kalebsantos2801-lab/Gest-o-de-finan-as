@@ -8,7 +8,9 @@ import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { memoryCache } from '@/lib/cache';
 import { Income, Account } from '@/types/database';
-import { ArrowDownLeft, Plus, Trash2, Calendar, CheckCircle2, AlertCircle, Loader2, Pencil } from 'lucide-react';
+import { parseSalaryInfo } from '@/lib/accountUtils';
+import { RegisterSalaryModal } from '@/components/salary/RegisterSalaryModal';
+import { ArrowDownLeft, Plus, Trash2, Calendar, CheckCircle2, AlertCircle, Loader2, Pencil, Banknote, Zap, Building } from 'lucide-react';
 
 export default function IncomePage() {
   return (
@@ -22,19 +24,16 @@ export default function IncomePage() {
 
 function IncomeContent() {
   const { profile, user } = useAuth();
-  const [incomes, setIncomes] = useState<Income[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [incomes, setIncomes] = useState<Income[]>(() => memoryCache.get<Income[]>('income_list') || []);
+  const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('income_accounts') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('income_list'));
   const [modalOpen, setModalOpen] = useState(false);
+  const [salaryModalOpen, setSalaryModalOpen] = useState(false);
   const [editingIncome, setEditingIncome] = useState<Income | null>(null);
 
-  useEffect(() => {
-    const cachedIncomes = memoryCache.get<Income[]>('income_list');
-    const cachedAccounts = memoryCache.get<Account[]>('income_accounts');
-    if (cachedIncomes) setIncomes(cachedIncomes);
-    if (cachedAccounts) setAccounts(cachedAccounts);
-    if (cachedIncomes) setLoading(false);
-  }, []);
+  // Delete modal state
+  const [incomeToDelete, setIncomeToDelete] = useState<Income | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Form state
   const [description, setDescription] = useState('Salário');
@@ -47,6 +46,26 @@ function IncomeContent() {
   const [isRecurring, setIsRecurring] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const salaryAccounts = accounts.filter(a => {
+    const info = parseSalaryInfo(a);
+    return info.isSalaryAccount && info.salaryAmount > 0;
+  });
+
+  const handleQuickLaunchSalary = (acc: Account) => {
+    const info = parseSalaryInfo(acc);
+    setEditingIncome(null);
+    setDescription('Salário');
+    setCustomDescription('');
+    setCategory('Salário');
+    setCustomCategory('');
+    setAmount(info.salaryAmount.toString());
+    setReceivedAt(new Date().toISOString().split('T')[0]);
+    setAccountId(acc.id);
+    setIsRecurring(true);
+    setErrorMsg('');
+    setModalOpen(true);
+  };
 
   const handleStartEdit = (item: Income) => {
     setEditingIncome(item);
@@ -123,18 +142,63 @@ function IncomeContent() {
       if (accData) {
         setAccounts(accData as Account[]);
         memoryCache.set('income_accounts', accData);
-        if (accData.length > 0 && !accountId) setAccountId(accData[0].id);
+        if (accData.length > 0) {
+          setAccountId(prev => prev || accData[0].id);
+        }
       }
     } catch (err) {
       console.error('Error fetching income:', err);
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id, accountId]);
+  }, [profile?.family_id]);
 
   useEffect(() => {
-    loadData();
+    const hasCache = memoryCache.get('income_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadData();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadData();
+    }
   }, [loadData]);
+
+  const ensureSalaryAccount = async (): Promise<string | null> => {
+    if (!profile?.family_id || !user?.id) return null;
+    const existing = accounts.find(
+      (a) => a.is_salary_account || parseSalaryInfo(a).isSalaryAccount || a.name.toLowerCase().includes('salário') || a.name.toLowerCase().includes('salario')
+    );
+    if (existing) return existing.id;
+
+    try {
+      const { data: newAcc, error } = await supabase
+        .from('accounts')
+        .insert({
+          family_id: profile.family_id,
+          user_id: user.id,
+          name: 'Conta Salário',
+          type: 'checking',
+          balance: 0,
+          institution: 'Conta Salário',
+          color: '#10b981',
+          is_salary_account: true,
+        })
+        .select()
+        .single();
+
+      if (!error && newAcc) {
+        const created = newAcc as Account;
+        setAccounts((prev) => [created, ...prev]);
+        return created.id;
+      }
+    } catch (err) {
+      console.error('Error creating salary account:', err);
+    }
+    return null;
+  };
 
   const handleAddIncome = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,6 +232,11 @@ function IncomeContent() {
       const finalCategory = category === 'Outros' ? customCategory.trim() : category;
       const finalDescription = description === 'Outros' ? customDescription.trim() : description;
       
+      let finalAccountId: string | null = accountId || null;
+      if (accountId === 'SALARY_ACCOUNT') {
+        finalAccountId = await ensureSalaryAccount();
+      }
+
       if (editingIncome) {
         // Track previous state for account balance updates
         const oldAmount = Number(editingIncome.amount);
@@ -180,7 +249,7 @@ function IncomeContent() {
             amount: parsedAmount,
             category: finalCategory,
             received_at: receivedAt,
-            account_id: accountId || null,
+            account_id: finalAccountId,
             is_recurring: isRecurring,
           })
           .eq('id', editingIncome.id);
@@ -202,11 +271,11 @@ function IncomeContent() {
         }
 
         // 2. Apply new balance impact (adds new balance)
-        if (accountId) {
-          const acc = accounts.find(a => a.id === accountId);
+        if (finalAccountId) {
+          const acc = accounts.find(a => a.id === finalAccountId);
           if (acc) {
             const newBalance = Number(acc.balance) + parsedAmount;
-            await supabase.from('accounts').update({ balance: newBalance }).eq('id', accountId);
+            await supabase.from('accounts').update({ balance: newBalance }).eq('id', finalAccountId);
             acc.balance = newBalance;
           }
         }
@@ -218,7 +287,7 @@ function IncomeContent() {
           amount: parsedAmount,
           category: finalCategory,
           received_at: receivedAt,
-          account_id: accountId || null,
+          account_id: finalAccountId,
           is_recurring: isRecurring,
           status: 'received',
         });
@@ -230,13 +299,13 @@ function IncomeContent() {
         }
 
         // Also update account balance if selected
-        if (accountId) {
-          const acc = accounts.find((a) => a.id === accountId);
+        if (finalAccountId) {
+          const acc = accounts.find((a) => a.id === finalAccountId);
           if (acc) {
             await supabase
               .from('accounts')
               .update({ balance: Number(acc.balance) + parsedAmount })
-              .eq('id', accountId);
+              .eq('id', finalAccountId);
           }
         }
       }
@@ -257,10 +326,38 @@ function IncomeContent() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Deseja excluir esta entrada?')) return;
-    await supabase.from('income').delete().eq('id', id);
-    setIncomes((prev) => prev.filter((i) => i.id !== id));
+  const handleConfirmDelete = async () => {
+    if (!incomeToDelete) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.from('income').delete().eq('id', incomeToDelete.id);
+      if (error) {
+        alert('Erro ao excluir receita: ' + error.message);
+        setDeleting(false);
+        return;
+      }
+
+      // Rollback account balance if linked account existed
+      if (incomeToDelete.account_id) {
+        const acc = accounts.find((a) => a.id === incomeToDelete.account_id);
+        if (acc) {
+          const newBal = Number(acc.balance) - Number(incomeToDelete.amount || 0);
+          await supabase.from('accounts').update({ balance: newBal }).eq('id', incomeToDelete.account_id);
+        }
+      }
+
+      const updated = incomes.filter((i) => i.id !== incomeToDelete.id);
+      setIncomes(updated);
+      memoryCache.set('income_list', updated);
+      memoryCache.delete('dashboard_incomes');
+      setIncomeToDelete(null);
+      await loadData();
+    } catch (err: unknown) {
+      console.error('Error deleting income:', err);
+      alert('Erro ao excluir entrada.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const totalIncomes = incomes.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
@@ -284,13 +381,23 @@ function IncomeContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-start sm:justify-end">
             <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2.5 text-right">
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Total Recebido</span>
               <span className="text-base sm:text-lg font-extrabold text-emerald-400 font-mono">
                 R$ {totalIncomes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
               </span>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setSalaryModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-xl transition border border-emerald-500/30 active:scale-[0.98] cursor-pointer"
+              title="Registrar Salário sem vínculo com contas bancárias"
+            >
+              <Banknote className="w-4 h-4 text-emerald-400" />
+              <span>Registrar Salário</span>
+            </button>
 
             <button
               id="btn-new-income"
@@ -302,6 +409,51 @@ function IncomeContent() {
             </button>
           </div>
         </div>
+
+        {/* Salary Accounts Banner */}
+        {salaryAccounts.length > 0 && (
+          <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-[24px] p-5 shadow-xl space-y-3 backdrop-blur-xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/20 rounded-xl text-emerald-400">
+                  <Banknote className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Contas Salário Vinculadas</h3>
+                  <p className="text-xs text-slate-300">
+                    Clique em &quot;Lançar&quot; para registrar o recebimento do salário e atualizar o saldo da conta vinculada
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+              {salaryAccounts.map((acc) => {
+                const info = parseSalaryInfo(acc);
+                return (
+                  <div key={acc.id} className="bg-slate-900/80 border border-emerald-500/20 rounded-2xl p-4 flex items-center justify-between gap-3 shadow-md">
+                    <div className="min-w-0">
+                      <span className="text-xs font-bold text-white block truncate">{acc.name}</span>
+                      <span className="text-[11px] text-emerald-400 font-mono font-bold">
+                        R$ {info.salaryAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </span>
+                      <span className="text-[10px] text-slate-400 block">Previsão: Dia {info.salaryDay} de cada mês</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleQuickLaunchSalary(acc)}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition border border-emerald-400/20 shadow-md flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>Lançar</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* List */}
         <div className="bg-white/[0.04] backdrop-blur-2xl border border-white/10 rounded-[28px] overflow-hidden shadow-2xl">
@@ -364,7 +516,7 @@ function IncomeContent() {
                         <Pencil className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(item.id)}
+                        onClick={() => setIncomeToDelete(item)}
                         className="p-2 text-slate-400 hover:text-rose-400 transition rounded-xl hover:bg-white/5 active:scale-95 cursor-pointer"
                         title="Excluir"
                       >
@@ -476,18 +628,26 @@ function IncomeContent() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-300 ml-1">Conta de Destino</label>
+                  <label className="text-xs font-medium text-slate-300 ml-1">Conta de Destino (Opcional)</label>
                   <select
                     value={accountId}
                     onChange={(e) => setAccountId(e.target.value)}
                     className="w-full px-3.5 py-2.5 bg-[#0f172a] border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
                   >
                     <option value="">Nenhuma / Outra</option>
-                    {accounts.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name}
-                      </option>
-                    ))}
+                    <option value="SALARY_ACCOUNT">💼 Creditar na Conta Salário</option>
+                    {accounts.length > 0 && (
+                      <optgroup label="Minhas Contas Bancárias">
+                        {accounts.map((acc) => {
+                          const isSal = acc.is_salary_account || parseSalaryInfo(acc).isSalaryAccount || acc.name.toLowerCase().includes('salário') || acc.name.toLowerCase().includes('salario');
+                          return (
+                            <option key={acc.id} value={acc.id}>
+                              {isSal ? `💼 ${acc.name} (Conta Salário)` : `🏦 ${acc.name}`}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
               </div>
@@ -525,6 +685,55 @@ function IncomeContent() {
           </div>
         </div>
       )}
+      {/* Modal Confirmação de Exclusão */}
+      {incomeToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Excluir Entrada</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja excluir a entrada <strong className="text-white">&quot;{incomeToDelete.description}&quot;</strong> no valor de <strong className="text-emerald-400 font-mono">R$ {Number(incomeToDelete.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setIncomeToDelete(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Excluindo...</span>
+                  </>
+                ) : (
+                  'Sim, Excluir'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <RegisterSalaryModal
+        isOpen={salaryModalOpen}
+        onClose={() => setSalaryModalOpen(false)}
+        onSuccess={loadData}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "Gestão Financeira Familiar",
-  "description": "Sistema de gestão financeira familiar integrado com Supabase Auth, controle de famílias, perfis, período de testes de 7 dias e painel administrativo.",
+  "description": "Sistema de gestão financeira familiar integrado com Supabase Auth, controle de famílias, perfis, período de testes de 7 dias, infográfico visual de salários vs despesas mensais e painel administrativo.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

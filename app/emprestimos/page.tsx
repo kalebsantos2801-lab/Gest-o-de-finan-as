@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { memoryCache } from '@/lib/cache';
 import { Loan } from '@/types/database';
 import { Banknote, Plus, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -21,9 +22,15 @@ export default function LoansPage() {
 
 function LoansContent() {
   const { profile, user } = useAuth();
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loans, setLoans] = useState<Loan[]>(() => memoryCache.get<Loan[]>('loans_list') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('loans_list'));
   const [modalOpen, setModalOpen] = useState(false);
+
+  // Modal states for Pagar Parcela e Excluir
+  const [loanToPay, setLoanToPay] = useState<Loan | null>(null);
+  const [payingInstallment, setPayingInstallment] = useState(false);
+  const [loanToDelete, setLoanToDelete] = useState<Loan | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [title, setTitle] = useState('');
   const [lender, setLender] = useState('');
@@ -38,14 +45,20 @@ function LoansContent() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const cached = memoryCache.get<Loan[]>('loans_list');
+    if (!cached) {
+      setLoading(true);
+    }
     try {
       const { data } = await supabase
         .from('loans')
         .select('*')
         .eq('family_id', profile.family_id)
         .order('created_at', { ascending: false });
-      if (data) setLoans(data as Loan[]);
+      if (data) {
+        setLoans(data as Loan[]);
+        memoryCache.set('loans_list', data);
+      }
     } catch (err) {
       console.error('Error fetching loans:', err);
     } finally {
@@ -54,7 +67,16 @@ function LoansContent() {
   }, [profile?.family_id]);
 
   useEffect(() => {
-    loadLoans();
+    const hasCache = memoryCache.get('loans_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadLoans();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadLoans();
+    }
   }, [loadLoans]);
 
   const handleAddLoan = async (e: React.FormEvent) => {
@@ -84,6 +106,8 @@ function LoansContent() {
       if (error) {
         setErrorMsg(error.message);
       } else {
+        memoryCache.delete('loans_list');
+        memoryCache.delete('report_loans');
         setTitle('');
         setLender('');
         setTotalAmount('');
@@ -98,28 +122,52 @@ function LoansContent() {
     }
   };
 
-  const handlePayInstallment = async (loan: Loan) => {
-    const nextPaid = loan.paid_installments + 1;
-    if (nextPaid > loan.total_installments) return;
+  const handleConfirmPayInstallment = async () => {
+    if (!loanToPay) return;
+    const nextPaid = loanToPay.paid_installments + 1;
+    if (nextPaid > loanToPay.total_installments) return;
 
-    const installmentValue = loan.total_amount / loan.total_installments;
-    const remaining = Math.max(0, loan.remaining_amount - installmentValue);
+    setPayingInstallment(true);
+    try {
+      const installmentValue = loanToPay.total_amount / loanToPay.total_installments;
+      const remaining = Math.max(0, loanToPay.remaining_amount - installmentValue);
 
-    await supabase
-      .from('loans')
-      .update({
-        paid_installments: nextPaid,
-        remaining_amount: remaining,
-      })
-      .eq('id', loan.id);
+      await supabase
+        .from('loans')
+        .update({
+          paid_installments: nextPaid,
+          remaining_amount: remaining,
+        })
+        .eq('id', loanToPay.id);
 
-    await loadLoans();
+      memoryCache.delete('loans_list');
+      memoryCache.delete('report_loans');
+      setLoanToPay(null);
+      await loadLoans();
+    } catch (err) {
+      console.error('Error paying installment:', err);
+      alert('Erro ao pagar parcela.');
+    } finally {
+      setPayingInstallment(false);
+    }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Deseja excluir este empréstimo?')) return;
-    await supabase.from('loans').delete().eq('id', id);
-    setLoans(prev => prev.filter(l => l.id !== id));
+  const handleConfirmDelete = async () => {
+    if (!loanToDelete) return;
+    setDeleting(true);
+    try {
+      await supabase.from('loans').delete().eq('id', loanToDelete.id);
+      memoryCache.delete('loans_list');
+      memoryCache.delete('report_loans');
+      setLoans(prev => prev.filter(l => l.id !== loanToDelete.id));
+      setLoanToDelete(null);
+      await loadLoans();
+    } catch (err) {
+      console.error('Error deleting loan:', err);
+      alert('Erro ao excluir empréstimo.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const totalLoansValue = loans.reduce((acc, curr) => acc + Number(curr.remaining_amount || 0), 0);
@@ -142,7 +190,7 @@ function LoansContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-start sm:justify-end">
             <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2.5 text-right">
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Saldo Devedor Total</span>
               <span className="text-base sm:text-lg font-extrabold text-emerald-400 font-mono">
@@ -191,8 +239,9 @@ function LoansContent() {
                       <p className="text-xs text-slate-400">{loan.lender} • Taxa: {loan.interest_rate}% a.m.</p>
                     </div>
                     <button
-                      onClick={() => handleDelete(loan.id)}
-                      className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5"
+                      onClick={() => setLoanToDelete(loan)}
+                      className="p-1.5 text-slate-400 hover:text-rose-400 transition rounded-lg hover:bg-white/5 cursor-pointer"
+                      title="Excluir"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -218,8 +267,8 @@ function LoansContent() {
 
                     {loan.paid_installments < loan.total_installments ? (
                       <button
-                        onClick={() => handlePayInstallment(loan)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-bold transition shadow-sm"
+                        onClick={() => setLoanToPay(loan)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-bold transition shadow-sm cursor-pointer"
                       >
                         <CheckCircle2 className="w-4 h-4" /> Pagar Parcela
                       </button>
@@ -333,6 +382,93 @@ function LoansContent() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Modal Confirmação de Pagamento de Parcela */}
+      {loanToPay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Pagar Parcela</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja marcar a <strong className="text-emerald-400">Parcela {loanToPay.paid_installments + 1} de {loanToPay.total_installments}</strong> do empréstimo <strong className="text-white">&quot;{loanToPay.lender || loanToPay.title}&quot;</strong> como <span className="text-emerald-400 font-bold">PAGA</span>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={payingInstallment}
+                onClick={() => setLoanToPay(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={payingInstallment}
+                onClick={handleConfirmPayInstallment}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-emerald-600/25 border border-emerald-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {payingInstallment ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Processando...</span>
+                  </>
+                ) : (
+                  'Sim, Pagar Parcela'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmação de Exclusão */}
+      {loanToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Excluir Empréstimo</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja excluir permanentemente o empréstimo <strong className="text-white">&quot;{loanToDelete.title}&quot;</strong>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setLoanToDelete(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Excluindo...</span>
+                  </>
+                ) : (
+                  'Sim, Excluir'
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

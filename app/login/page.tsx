@@ -99,9 +99,17 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-8 relative overflow-hidden">
+      {/* High-end low-opacity atmospheric background image overlay */}
+      <div 
+        className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-[0.12] pointer-events-none scale-105" 
+        style={{ backgroundImage: "url('/logo_finanzza.jpg?v=3')" }}
+      />
+      {/* Soft vignette gradient */}
+      <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-transparent to-[#020617]/80 pointer-events-none" />
+
       {/* Ambient glowing background orbs */}
-      <div className="absolute top-[-10%] left-[-10%] w-[45%] h-[45%] bg-indigo-600/30 rounded-full blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-emerald-500/20 rounded-full blur-[150px] pointer-events-none" />
+      <div className="absolute top-[-10%] left-[-10%] w-[45%] h-[45%] bg-emerald-600/10 rounded-full blur-[130px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-amber-500/5 rounded-full blur-[150px] pointer-events-none" />
 
       {/* Top bar info */}
       <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-20">
@@ -121,11 +129,11 @@ export default function LoginPage() {
           <div>
             {/* Logo */}
             <div className="flex items-center gap-3 mb-8">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/25 border border-indigo-400/30 text-white">
-                <Wallet className="w-5 h-5" />
+              <div className="relative w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-black/40 border border-white/10">
+                <img src="/logo_finanzza.jpg?v=3" alt="Logo Finanzza" className="w-full h-full object-cover" />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-white">
-                Finanzza<span className="text-indigo-400">Auth</span>
+                Finanzza<span className="text-emerald-400">Auth</span>
               </h1>
             </div>
 

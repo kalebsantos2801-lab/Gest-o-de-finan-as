@@ -7,18 +7,14 @@
   }
 }
 
-/* Custom frosted glass utility helpers - Optimized for 60fps/120fps hardware rendering */
+/* Custom frosted glass utility helpers - Optimized for high 60fps/120fps rendering */
 .glass-panel {
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(15, 23, 42, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .glass-card {
-  background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -33,20 +29,28 @@
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
 }
 
-/* Global hardware acceleration and performance optimization overrides for transitions */
+/* Optimize backdrop-filter for high performance page transitions */
 @layer utilities {
   .backdrop-blur-2xl,
   .backdrop-blur-xl,
   .backdrop-blur-lg,
   .backdrop-blur-md {
-    backdrop-filter: blur(6px) !important;
-    -webkit-backdrop-filter: blur(6px) !important;
-    will-change: transform, opacity;
+    /* Completely avoid expensive multi-pass blurs on repeating grid items which choke mobile/desktop page switches. Use clean solid backgrounds with transparency instead. */
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background-color: rgba(15, 23, 42, 0.85) !important;
+  }
+
+  /* Retain glassmorphism ONLY for the main header navigation since it is a single static element */
+  header.backdrop-blur-2xl {
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    background-color: rgba(2, 6, 23, 0.8) !important;
   }
 }
 
-/* Ensure smooth, hardware-accelerated transitions for navigation links */
+/* Ensure smooth transitions for navigation links without expensive will-change compositing */
 a, button {
-  will-change: transform, opacity;
   transition-duration: 150ms !important;
 }
+

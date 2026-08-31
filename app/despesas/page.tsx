@@ -7,8 +7,9 @@ import { AuthGuard } from '@/components/auth/AuthGuard';
 import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { memoryCache } from '@/lib/cache';
-import { Expense, Account } from '@/types/database';
-import { ArrowUpRight, Plus, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Pencil } from 'lucide-react';
+import { Expense, Account, CreditCard as CreditCardType } from '@/types/database';
+import { parseSalaryInfo } from '@/lib/accountUtils';
+import { ArrowUpRight, Plus, Trash2, CheckCircle, Clock, AlertCircle, Loader2, Pencil, Banknote, CreditCard } from 'lucide-react';
 
 export default function ExpensesPage() {
   return (
@@ -22,19 +23,20 @@ export default function ExpensesPage() {
 
 function ExpensesContent() {
   const { profile, user } = useAuth();
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [expenses, setExpenses] = useState<Expense[]>(() => memoryCache.get<Expense[]>('expenses_list') || []);
+  const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('expenses_accounts') || []);
+  const [creditCards, setCreditCards] = useState<CreditCardType[]>(() => memoryCache.get<CreditCardType[]>('expenses_credit_cards') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('expenses_list'));
   const [modalOpen, setModalOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
-  useEffect(() => {
-    const cachedExpenses = memoryCache.get<Expense[]>('expenses_list');
-    const cachedAccounts = memoryCache.get<Account[]>('expenses_accounts');
-    if (cachedExpenses) setExpenses(cachedExpenses);
-    if (cachedAccounts) setAccounts(cachedAccounts);
-    if (cachedExpenses) setLoading(false);
-  }, []);
+  // Delete modal state
+  const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Toggle Paid status modal state
+  const [expenseToToggleStatus, setExpenseToToggleStatus] = useState<Expense | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   // Form
   const [description, setDescription] = useState('Mercado');
@@ -127,6 +129,15 @@ function ExpensesContent() {
         setAccounts(accData as Account[]);
         memoryCache.set('expenses_accounts', accData);
       }
+
+      const { data: cardsData } = await supabase
+        .from('credit_cards')
+        .select('*')
+        .eq('family_id', profile.family_id);
+      if (cardsData) {
+        setCreditCards(cardsData as CreditCardType[]);
+        memoryCache.set('expenses_credit_cards', cardsData);
+      }
     } catch (err) {
       console.error('Error fetching expenses:', err);
     } finally {
@@ -135,8 +146,51 @@ function ExpensesContent() {
   }, [profile?.family_id]);
 
   useEffect(() => {
-    loadData();
+    const hasCache = memoryCache.get('expenses_list');
+    if (hasCache) {
+      // Defer background revalidation by 400ms to allow route transitions to complete with 0% CPU thread blocking
+      const timer = setTimeout(() => {
+        loadData();
+      }, 400);
+      return () => clearTimeout(timer);
+    } else {
+      loadData();
+    }
   }, [loadData]);
+
+  const ensureSalaryAccount = async (): Promise<string | null> => {
+    if (!profile?.family_id || !user?.id) return null;
+    const existing = accounts.find(
+      (a) => a.is_salary_account || parseSalaryInfo(a).isSalaryAccount || a.name.toLowerCase().includes('salário') || a.name.toLowerCase().includes('salario')
+    );
+    if (existing) return existing.id;
+
+    try {
+      const { data: newAcc, error } = await supabase
+        .from('accounts')
+        .insert({
+          family_id: profile.family_id,
+          user_id: user.id,
+          name: 'Conta Salário',
+          type: 'checking',
+          balance: 0,
+          institution: 'Conta Salário',
+          color: '#10b981',
+          is_salary_account: true,
+        })
+        .select()
+        .single();
+
+      if (!error && newAcc) {
+        const created = newAcc as Account;
+        setAccounts((prev) => [created, ...prev]);
+        return created.id;
+      }
+    } catch (err) {
+      console.error('Error creating salary account:', err);
+    }
+    return null;
+  };
 
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,6 +224,11 @@ function ExpensesContent() {
       const finalCategory = category === 'Outros' ? customCategory.trim() : category;
       const finalDescription = description === 'Outros' ? customDescription.trim() : description;
 
+      let finalAccountId: string | null = accountId || null;
+      if (accountId === 'SALARY_DEDUCTION') {
+        finalAccountId = await ensureSalaryAccount();
+      }
+
       if (editingExpense) {
         // Track previous state for account balance updates
         const oldAmount = Number(editingExpense.amount);
@@ -183,7 +242,7 @@ function ExpensesContent() {
             amount: parsedAmount,
             category: finalCategory,
             due_date: dueDate,
-            account_id: accountId || null,
+            account_id: finalAccountId,
             is_recurring: isRecurring,
             status,
           })
@@ -206,11 +265,11 @@ function ExpensesContent() {
         }
 
         // 2. Apply new balance impact if now paid
-        if (status === 'paid' && accountId) {
-          const acc = accounts.find(a => a.id === accountId);
+        if (status === 'paid' && finalAccountId) {
+          const acc = accounts.find(a => a.id === finalAccountId);
           if (acc) {
             const newBalance = Number(acc.balance) - parsedAmount;
-            await supabase.from('accounts').update({ balance: newBalance }).eq('id', accountId);
+            await supabase.from('accounts').update({ balance: newBalance }).eq('id', finalAccountId);
             acc.balance = newBalance;
           }
         }
@@ -222,7 +281,7 @@ function ExpensesContent() {
           amount: parsedAmount,
           category: finalCategory,
           due_date: dueDate,
-          account_id: accountId || null,
+          account_id: finalAccountId,
           is_recurring: isRecurring,
           status,
         });
@@ -234,13 +293,13 @@ function ExpensesContent() {
         }
 
         // Deduct from account balance if already paid and account selected
-        if (status === 'paid' && accountId) {
-          const acc = accounts.find((a) => a.id === accountId);
+        if (status === 'paid' && finalAccountId) {
+          const acc = accounts.find((a) => a.id === finalAccountId);
           if (acc) {
             await supabase
               .from('accounts')
               .update({ balance: Number(acc.balance) - parsedAmount })
-              .eq('id', accountId);
+              .eq('id', finalAccountId);
           }
         }
       }
@@ -261,18 +320,77 @@ function ExpensesContent() {
     }
   };
 
-  const toggleStatus = async (item: Expense) => {
-    const newStatus = item.status === 'paid' ? 'pending' : 'paid';
-    await supabase.from('expenses').update({ status: newStatus }).eq('id', item.id);
-    setExpenses((prev) =>
-      prev.map((e) => (e.id === item.id ? { ...e, status: newStatus } : e))
-    );
+  const handleConfirmToggleStatus = async () => {
+    if (!expenseToToggleStatus) return;
+    setUpdatingStatus(true);
+    try {
+      const isPaying = expenseToToggleStatus.status === 'pending';
+      const newStatus: 'paid' | 'pending' = isPaying ? 'paid' : 'pending';
+
+      const { error } = await supabase
+        .from('expenses')
+        .update({ status: newStatus })
+        .eq('id', expenseToToggleStatus.id);
+
+      if (error) {
+        alert('Erro ao atualizar status da despesa: ' + error.message);
+        setUpdatingStatus(false);
+        return;
+      }
+
+      // Adjust account balance if linked account is present
+      if (expenseToToggleStatus.account_id) {
+        const acc = accounts.find((a) => a.id === expenseToToggleStatus.account_id);
+        if (acc) {
+          const expenseAmount = Number(expenseToToggleStatus.amount || 0);
+          const balanceDiff = isPaying ? -expenseAmount : expenseAmount;
+          const newBalance = Number(acc.balance) + balanceDiff;
+
+          await supabase
+            .from('accounts')
+            .update({ balance: newBalance })
+            .eq('id', expenseToToggleStatus.account_id);
+        }
+      }
+
+      memoryCache.delete('expenses_list');
+      memoryCache.delete('expenses_accounts');
+      memoryCache.delete('dashboard_expenses');
+      memoryCache.delete('income_accounts');
+
+      setExpenseToToggleStatus(null);
+      await loadData();
+    } catch (err: unknown) {
+      console.error('Error toggling status:', err);
+      alert('Erro ao alterar status da despesa.');
+    } finally {
+      setUpdatingStatus(false);
+    }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Deseja excluir esta despesa?')) return;
-    await supabase.from('expenses').delete().eq('id', id);
-    setExpenses((prev) => prev.filter((i) => i.id !== id));
+  const handleConfirmDelete = async () => {
+    if (!expenseToDelete) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.from('expenses').delete().eq('id', expenseToDelete.id);
+      if (error) {
+        alert('Erro ao excluir despesa: ' + error.message);
+        setDeleting(false);
+        return;
+      }
+
+      const updated = expenses.filter((i) => i.id !== expenseToDelete.id);
+      setExpenses(updated);
+      memoryCache.set('expenses_list', updated);
+      memoryCache.delete('dashboard_expenses');
+      setExpenseToDelete(null);
+      await loadData();
+    } catch (err: unknown) {
+      console.error('Error deleting expense:', err);
+      alert('Erro ao excluir despesa.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const totalExpenses = expenses.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
@@ -297,7 +415,7 @@ function ExpensesContent() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-start sm:justify-end">
             <div className="bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-2xl px-4 py-2.5 text-right">
               <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Total Despesas</span>
               <span className="text-base sm:text-lg font-extrabold text-rose-400 font-mono">
@@ -381,7 +499,7 @@ function ExpensesContent() {
                 <div key={item.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-white/[0.03] transition">
                   <div className="flex items-start sm:items-center gap-3.5 w-full sm:w-auto">
                     <button
-                      onClick={() => toggleStatus(item)}
+                      onClick={() => setExpenseToToggleStatus(item)}
                       title={item.status === 'paid' ? 'Marcar como pendente' : 'Marcar como paga'}
                       className={`p-2.5 rounded-2xl transition border shrink-0 mt-0.5 sm:mt-0 ${
                         item.status === 'paid'
@@ -401,6 +519,35 @@ function ExpensesContent() {
                         <span className={`text-[10px] font-bold ${item.status === 'paid' ? 'text-emerald-400' : 'text-amber-400'}`}>
                           • {item.status === 'paid' ? 'PAGA' : 'PENDENTE'}
                         </span>
+                        {item.account_id && (() => {
+                          const cleanAccId = item.account_id.replace(/^CARD_/, '');
+                          const card = creditCards.find((c) => c.id === cleanAccId || c.id === item.account_id);
+                          if (card) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-bold inline-flex items-center gap-1">
+                                <CreditCard className="w-3 h-3 text-purple-400" /> Abate Cartão: {card.name}
+                              </span>
+                            );
+                          }
+
+                          const acc = accounts.find((a) => a.id === item.account_id);
+                          const isSal = acc && (acc.is_salary_account || parseSalaryInfo(acc).isSalaryAccount || acc.name.toLowerCase().includes('salário') || acc.name.toLowerCase().includes('salario'));
+                          if (isSal) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold inline-flex items-center gap-1">
+                                <Banknote className="w-3 h-3 text-emerald-400" /> Abatido do Salário
+                              </span>
+                            );
+                          }
+                          if (acc) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300 text-[10px] inline-flex items-center gap-1">
+                                🏦 {acc.name}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -418,7 +565,7 @@ function ExpensesContent() {
                         <Pencil className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(item.id)}
+                        onClick={() => setExpenseToDelete(item)}
                         className="p-2 text-slate-400 hover:text-rose-400 transition rounded-xl hover:bg-white/5 active:scale-95 cursor-pointer"
                         title="Excluir"
                       >
@@ -548,19 +695,57 @@ function ExpensesContent() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-300 ml-1">Conta Bancária (Opcional)</label>
+                <label className="text-xs font-medium text-slate-300 ml-1 flex items-center justify-between">
+                  <span>Conta / Abate (Opcional)</span>
+                  <span className="text-[10px] text-purple-400 font-semibold flex items-center gap-1">
+                    <CreditCard className="w-3 h-3" /> Abate Cartão / Salário
+                  </span>
+                </label>
                 <select
                   value={accountId}
                   onChange={(e) => setAccountId(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-[#0f172a] border border-white/10 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
                 >
                   <option value="">Nenhuma / Outra</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name}
-                    </option>
-                  ))}
+                  <option value="SALARY_DEDUCTION">💼 Abater do Meu Salário (Direto)</option>
+                  
+                  {creditCards.length > 0 && (
+                    <optgroup label="Meus Cartões de Crédito (Abate em Fatura)">
+                      {creditCards.map((card) => (
+                        <option key={card.id} value={`CARD_${card.id}`}>
+                          💳 {card.name} {card.last_digits ? `(•••• ${card.last_digits})` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+
+                  {accounts.length > 0 && (
+                    <optgroup label="Minhas Contas Bancárias">
+                      {accounts.map((acc) => {
+                        const isSal = acc.is_salary_account || parseSalaryInfo(acc).isSalaryAccount || acc.name.toLowerCase().includes('salário') || acc.name.toLowerCase().includes('salario');
+                        return (
+                          <option key={acc.id} value={acc.id}>
+                            {isSal ? `💼 ${acc.name} (Conta Salário)` : `🏦 ${acc.name}`}
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                  )}
                 </select>
+
+                {accountId === 'SALARY_DEDUCTION' && (
+                  <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-2 text-[11px] text-emerald-300 mt-1.5">
+                    <Banknote className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>O valor desta despesa será abatido diretamente do seu saldo de Salário ao ser salva como Paga.</span>
+                  </div>
+                )}
+
+                {accountId.startsWith('CARD_') && (
+                  <div className="p-2.5 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center gap-2 text-[11px] text-purple-300 mt-1.5">
+                    <CreditCard className="w-4 h-4 text-purple-400 shrink-0" />
+                    <span>Esta conta será lançada na fatura do cartão de crédito selecionado como abate opcional.</span>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-2 pt-1">
@@ -593,6 +778,121 @@ function ExpensesContent() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Modal Confirmação de Alteração de Status (Marcar como Paga / Pendente) */}
+      {expenseToToggleStatus && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mx-auto border ${
+              expenseToToggleStatus.status === 'pending'
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+            }`}>
+              <CheckCircle className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">
+                {expenseToToggleStatus.status === 'pending' ? 'Marcar Despesa como Paga' : 'Marcar como Pendente'}
+              </h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                {expenseToToggleStatus.status === 'pending' ? (
+                  <>
+                    Deseja marcar a despesa <strong className="text-white">&quot;{expenseToToggleStatus.description}&quot;</strong> no valor de <strong className="text-rose-400 font-mono">R$ {Number(expenseToToggleStatus.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong> como <span className="text-emerald-400 font-bold">PAGA</span>?
+                    {expenseToToggleStatus.account_id && (
+                      <span className="block mt-1 text-[11px] text-slate-400">
+                        O valor será debitado da conta vinculada.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    Deseja desmarcar o pagamento da despesa <strong className="text-white">&quot;{expenseToToggleStatus.description}&quot;</strong> e alterar seu status para <span className="text-amber-400 font-bold">PENDENTE</span>?
+                    {expenseToToggleStatus.account_id && (
+                      <span className="block mt-1 text-[11px] text-slate-400">
+                        O valor será estornado na conta vinculada.
+                      </span>
+                    )}
+                  </>
+                )}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={updatingStatus}
+                onClick={() => setExpenseToToggleStatus(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={updatingStatus}
+                onClick={handleConfirmToggleStatus}
+                className={`flex-1 py-2.5 text-white text-xs font-bold rounded-xl transition shadow-lg border cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5 ${
+                  expenseToToggleStatus.status === 'pending'
+                    ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/25 border-emerald-400/20'
+                    : 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/25 border-amber-400/20'
+                }`}
+              >
+                {updatingStatus ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Atualizando...</span>
+                  </>
+                ) : (
+                  expenseToToggleStatus.status === 'pending' ? 'Sim, Marcar como Paga' : 'Sim, Alterar para Pendente'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmação de Exclusão */}
+      {expenseToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl">
+          <div className="bg-[#0f172a]/95 backdrop-blur-2xl border border-white/10 w-full max-w-sm rounded-[28px] p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">Excluir Despesa</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tem certeza que deseja excluir a despesa <strong className="text-white">&quot;{expenseToDelete.description}&quot;</strong> no valor de <strong className="text-rose-400 font-mono">R$ {Number(expenseToDelete.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>?
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setExpenseToDelete(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold rounded-xl transition border border-white/10 cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition shadow-lg shadow-rose-600/25 border border-rose-400/20 cursor-pointer active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Excluindo...</span>
+                  </>
+                ) : (
+                  'Sim, Excluir'
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

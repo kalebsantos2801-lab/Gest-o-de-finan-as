@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { supabase, isSupabaseConfigured, updateSupabaseConfig } from '@/lib/supabase';
 import { Profile, Family, FamilyMember, TrialPeriod, AdminRole } from '@/types/database';
 
 interface SignUpData {

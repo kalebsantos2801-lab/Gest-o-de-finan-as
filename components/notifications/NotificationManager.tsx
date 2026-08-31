@@ -15,19 +15,23 @@ interface InAppToast {
   url: string;
 }
 
+// Persist check timestamp and Realtime socket channel globally across page switches/mounts
+let globalLastCheckTime = 0;
+let globalChannel: any = null;
+let globalChannelUserId: string | null = null;
+
 export function NotificationManager() {
   const { user } = useAuth();
   const router = useRouter();
-  const lastCheckRef = useRef<number>(0);
   const [toasts, setToasts] = useState<InAppToast[]>([]);
 
   const runNotificationCheck = useCallback(async () => {
     if (!user) return;
 
-    // Prevent checking more than once every 60 seconds
+    // Prevent checking more than once every 60 seconds across all page switches
     const now = Date.now();
-    if (now - lastCheckRef.current < 60000) return;
-    lastCheckRef.current = now;
+    if (now - globalLastCheckTime < 60000) return;
+    globalLastCheckTime = now;
 
     try {
       const data = await checkAndSendNotifications(user.id);
@@ -50,7 +54,7 @@ export function NotificationManager() {
   useEffect(() => {
     if (!user) return;
 
-    // Initial check on mount
+    // Initial check on mount (debounced via global check time)
     runNotificationCheck();
 
     // Periodic interval check every 5 minutes
@@ -85,36 +89,47 @@ export function NotificationManager() {
 
     window.addEventListener('show-in-app-toast', handleInAppToast);
 
-    // Realtime Supabase subscription for new notifications with a unique channel name to prevent re-subscribe errors
-    const channelId = `user_notifications_${user.id}_${Math.random().toString(36).substring(2, 10)}`;
-    const channel = supabase
-      .channel(channelId)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          const newNotif = payload.new as { title?: string; message?: string; target_url?: string };
-          if (newNotif?.title && newNotif?.message) {
-            const { cleanMessage, target_url } = decodeNotificationMessage(newNotif.message);
-            triggerNativeNotification({
-              title: newNotif.title,
-              body: cleanMessage,
-              url: newNotif.target_url || target_url || '/notificacoes',
-            });
-          }
+    // Reuse existing realtime subscription to avoid socket unmount/remount churn
+    if (!globalChannel || globalChannelUserId !== user.id) {
+      if (globalChannel) {
+        try {
+          supabase.removeChannel(globalChannel);
+        } catch {
+          // ignore
         }
-      )
-      .subscribe();
+      }
+
+      const channelId = `user_notifications_${user.id}_${Math.random().toString(36).substring(2, 10)}`;
+      globalChannel = supabase
+        .channel(channelId)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'notifications',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const newNotif = payload.new as { title?: string; message?: string; target_url?: string };
+            if (newNotif?.title && newNotif?.message) {
+              const { cleanMessage, target_url } = decodeNotificationMessage(newNotif.message);
+              triggerNativeNotification({
+                title: newNotif.title,
+                body: cleanMessage,
+                url: newNotif.target_url || target_url || '/notificacoes',
+              });
+            }
+          }
+        )
+        .subscribe();
+      globalChannelUserId = user.id;
+    }
 
     return () => {
       clearInterval(interval);
       window.removeEventListener('show-in-app-toast', handleInAppToast);
-      supabase.removeChannel(channel);
+      // We do NOT unsubscribe globalChannel here to keep the connection alive seamlessly
     };
   }, [user, runNotificationCheck]);
 

@@ -14,6 +14,11 @@ class MemoryCache {
     this.cache.set(key, value);
   }
 
+  delete(key: string): void {
+    if (typeof window === 'undefined') return;
+    this.cache.delete(key);
+  }
+
   clear(): void {
     this.cache.clear();
   }

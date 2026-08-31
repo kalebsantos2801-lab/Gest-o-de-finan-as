@@ -90,6 +90,10 @@ export interface Account {
   balance: number;
   color?: string;
   institution?: string;
+  is_salary_account?: boolean;
+  salary_amount?: number;
+  salary_day?: number;
+  auto_credit_salary?: boolean;
   created_at: string;
   updated_at: string;
 }

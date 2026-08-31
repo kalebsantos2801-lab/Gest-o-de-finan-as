@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/components/auth/AuthGuard';
 import { TrialGuard } from '@/components/auth/TrialGuard';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { memoryCache } from '@/lib/cache';
 import { AppNotification } from '@/types/database';
 import { triggerNativeNotification, playBellChime, getNotificationPermission, decodeNotificationMessage } from '@/lib/push-notifications';
 import { checkAndSendNotifications } from '@/lib/notification-checker';
@@ -42,8 +43,8 @@ export default function NotificationsPage() {
 
 function NotificationsContent() {
   const { user, profile } = useAuth();
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => memoryCache.get<AppNotification[]>('notifications_list') || []);
+  const [loading, setLoading] = useState(() => !memoryCache.get('notifications_list'));
   const [filter, setFilter] = useState<'all' | 'unread' | 'financial' | 'bills' | 'cards' | 'system'>('all');
   const [refreshing, setRefreshing] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState<string>('default');
@@ -60,7 +61,11 @@ function NotificationsContent() {
 
   const loadNotifications = useCallback(async () => {
     if (!user) return;
-    setLoading(true);
+    
+    const cached = memoryCache.get<AppNotification[]>('notifications_list');
+    if (!cached) {
+      setLoading(true);
+    }
     try {
       const { data, error } = await supabase
         .from('notifications')
@@ -79,6 +84,7 @@ function NotificationsContent() {
           };
         });
         setNotifications(decodedList as AppNotification[]);
+        memoryCache.set('notifications_list', decodedList);
       }
     } catch (err) {
       console.error('Error fetching notifications:', err);
@@ -96,6 +102,7 @@ function NotificationsContent() {
     setRefreshing(true);
     try {
       await checkAndSendNotifications(user.id);
+      memoryCache.delete('notifications_list');
       await loadNotifications();
     } catch (err) {
       console.error('Error running manual check:', err);
@@ -108,7 +115,11 @@ function NotificationsContent() {
     if (e) e.stopPropagation();
     try {
       await supabase.from('notifications').update({ is_read: true }).eq('id', id);
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+      setNotifications(prev => {
+        const updated = prev.map(n => n.id === id ? { ...n, is_read: true } : n);
+        memoryCache.set('notifications_list', updated);
+        return updated;
+      });
     } catch (err) {
       console.error('Error marking as read:', err);
     }
@@ -118,7 +129,11 @@ function NotificationsContent() {
     if (!user) return;
     try {
       await supabase.from('notifications').update({ is_read: true }).eq('user_id', user.id);
-      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setNotifications(prev => {
+        const updated = prev.map(n => ({ ...n, is_read: true }));
+        memoryCache.set('notifications_list', updated);
+        return updated;
+      });
     } catch (err) {
       console.error('Error marking all as read:', err);
     }
@@ -128,7 +143,11 @@ function NotificationsContent() {
     e.stopPropagation();
     try {
       await supabase.from('notifications').delete().eq('id', id);
-      setNotifications(prev => prev.filter(n => n.id !== id));
+      setNotifications(prev => {
+        const updated = prev.filter(n => n.id !== id);
+        memoryCache.set('notifications_list', updated);
+        return updated;
+      });
     } catch (err) {
       console.error('Error deleting notification:', err);
     }

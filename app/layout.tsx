@@ -3,8 +3,13 @@ import './globals.css';
 import { AuthProvider } from '@/src/contexts/AuthContext';
 
 export const metadata: Metadata = {
-  title: 'Gestão Financeira Familiar — Supabase Auth',
+  title: 'Gestão Financeira Familiar — Finanzza',
   description: 'Sistema completo de controle financeiro familiar com Supabase Auth, controle de famílias, perfis e período de testes.',
+  icons: {
+    icon: '/logo_finanzza.jpg?v=3',
+    shortcut: '/logo_finanzza.jpg?v=3',
+    apple: '/logo_finanzza.jpg?v=3',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
