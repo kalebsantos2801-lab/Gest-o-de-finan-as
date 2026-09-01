@@ -30,8 +30,11 @@ export function AdminGuard({ children }: AdminGuardProps) {
     );
   }
 
-  // Not authenticated or not SuperAdmin
-  if (!user || !isSuperAdmin) {
+  // Strictly verify master admin identity
+  const isMasterUser = Boolean(user?.email && user.email.toLowerCase().trim() === 'kalebsantos2801@gmail.com');
+
+  // Not authenticated or not Master SuperAdmin
+  if (!user || !isMasterUser || !isSuperAdmin) {
     return (
       <div id="admin-access-denied" className="min-h-screen flex items-center justify-center bg-transparent text-slate-100 p-4">
         <div className="max-w-md w-full bg-white/[0.04] backdrop-blur-2xl border border-rose-500/30 rounded-[28px] p-6 sm:p-7 text-center space-y-4 shadow-2xl">
@@ -39,9 +42,9 @@ export function AdminGuard({ children }: AdminGuardProps) {
             <ShieldAlert className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-extrabold text-white">Acesso Restrito: SuperAdmin</h2>
+            <h2 className="text-xl font-extrabold text-white">Acesso Restrito ao Administrador</h2>
             <p className="text-xs text-slate-400 mt-1">
-              Esta área é exclusiva para administradores com role autorizada no Supabase.
+              Esta área administrativa é exclusiva e restrita à conta mestra oficial (kalebsantos2801@gmail.com).
             </p>
           </div>
           <div className="pt-2">

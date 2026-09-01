@@ -346,7 +346,7 @@ RETURNS BOOLEAN AS $$
 BEGIN
   RETURN EXISTS (
     SELECT 1 FROM public.admin_roles
-    WHERE user_id = auth.uid() AND role = 'superadmin'
+    WHERE user_id = auth.uid() AND role = 'superadmin' AND lower(email) = 'kalebsantos2801@gmail.com'
   );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

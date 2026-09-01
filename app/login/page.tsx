@@ -56,11 +56,13 @@ export default function LoginPage() {
     setLoading(true);
     setErrorMsg('');
 
-    const res = await signIn(email, password);
+    const cleanInputEmail = email.trim().toLowerCase();
+    const res = await signIn(cleanInputEmail, password);
     setLoading(false);
 
     if (res.success) {
-      if (res.isSuperAdmin) {
+      // Direct to admin only if it is strictly the master admin email and authenticated as such
+      if (cleanInputEmail === 'kalebsantos2801@gmail.com' && res.isSuperAdmin) {
         router.push('/admin');
       } else {
         const redirectTarget = sessionStorage.getItem('auth_redirect') || '/dashboard';
@@ -74,26 +76,28 @@ export default function LoginPage() {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminEmail.trim() || !adminPassword) {
+    const cleanAdminEmail = adminEmail.trim().toLowerCase();
+    if (!cleanAdminEmail || !adminPassword) {
       setAdminError('Informe o e-mail e senha do administrador.');
+      return;
+    }
+
+    if (cleanAdminEmail !== 'kalebsantos2801@gmail.com') {
+      setAdminError('Acesso negado: Somente a credencial de Administrador Mestre oficial (kalebsantos2801@gmail.com) tem permissão de acesso ao painel.');
       return;
     }
 
     setAdminLoading(true);
     setAdminError('');
 
-    const res = await signIn(adminEmail, adminPassword);
+    const res = await signIn(cleanAdminEmail, adminPassword);
     setAdminLoading(false);
 
-    if (res.success) {
-      if (res.isSuperAdmin) {
-        setAdminModalOpen(false);
-        router.push('/admin');
-      } else {
-        setAdminError('Acesso negado: Este usuário não possui a permissão de SuperAdmin no banco de dados.');
-      }
+    if (res.success && res.isSuperAdmin) {
+      setAdminModalOpen(false);
+      router.push('/admin');
     } else {
-      setAdminError(res.error || 'Falha na autenticação administrativa.');
+      setAdminError(res.error || 'Falha na autenticação administrativa. Verifique a senha mestra.');
     }
   };
 
@@ -241,7 +245,6 @@ export default function LoginPage() {
               id="btn-admin-access"
               type="button"
               onClick={() => {
-                if (!adminEmail) setAdminEmail('superadmin123@gmail.com');
                 setAdminModalOpen(true);
               }}
               className="flex items-center gap-2 text-xs text-slate-400 hover:text-amber-300 transition-colors cursor-pointer"

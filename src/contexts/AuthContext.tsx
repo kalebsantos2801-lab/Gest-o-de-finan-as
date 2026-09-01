@@ -83,14 +83,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       let currentProfile = profileData;
 
-      // Master admin check (Kalebsantos emails)
+      // Master admin check (Strictly unique administrative email: kalebsantos2801@gmail.com)
       const cleanEmail = (currentUser.email || '').toLowerCase().trim();
-      const isMasterAdminEmail = cleanEmail === 'kalebsantos2801@gmail.com' || cleanEmail === 'kalebsantos06@gmail.com';
+      const isMasterAdminEmail = cleanEmail === 'kalebsantos2801@gmail.com';
 
       // Known admin family ID that must NEVER be shared with regular client accounts
       const superAdminFamilyId = '8853acf1-f040-4b4e-b807-05bb97eca7a8';
 
-      // Safeguard: If a non-superadmin account (e.g. Wellington or any other client) was inadvertently linked to the master admin family, detach and assign their own private family
+      // Safeguard: If a non-superadmin account was inadvertently linked to the master admin family, detach and assign their own private family
       const isLinkedToAdminFamily = currentProfile?.family_id === superAdminFamilyId;
 
       if (!isMasterAdminEmail && (isLinkedToAdminFamily || !currentProfile?.family_id)) {
@@ -302,20 +302,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setTrial(trialData);
 
-      // 4. Fetch Admin Role (or assign for master admin email kalebsantos2801@gmail.com)
-      const { data: adminData } = await supabase
-        .from('admin_roles')
-        .select('*')
-        .eq('user_id', currentUser.id)
-        .maybeSingle();
-
-      if (adminData) {
-        setAdminRole(adminData as AdminRole);
-      } else if (isMasterAdminEmail) {
+      // 4. Fetch Admin Role (Strictly restricted to single master admin account kalebsantos2801@gmail.com)
+      if (isMasterAdminEmail) {
         const masterRole: AdminRole = {
           id: currentUser.id,
           user_id: currentUser.id,
-          email: currentUser.email || 'kalebsantos2801@gmail.com',
+          email: 'kalebsantos2801@gmail.com',
           role: 'superadmin',
           requires_password_change: false,
           created_at: new Date().toISOString()
@@ -323,7 +315,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           await supabase.from('admin_roles').upsert({
             user_id: currentUser.id,
-            email: currentUser.email || 'kalebsantos2801@gmail.com',
+            email: 'kalebsantos2801@gmail.com',
             role: 'superadmin',
             requires_password_change: false
           });
@@ -332,6 +324,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setAdminRole(masterRole);
       } else {
+        // Automatic cleanup: Revoke any stray admin roles or permissions for non-master accounts
+        try {
+          await supabase.from('admin_roles').delete().eq('user_id', currentUser.id);
+          if (currentUser.email) {
+            await supabase.from('admin_roles').delete().ilike('email', currentUser.email);
+          }
+          await supabase.from('profiles').update({ role: 'owner', is_super_admin: false }).eq('id', currentUser.id);
+        } catch {
+          // ignore
+        }
         setAdminRole(null);
       }
     } catch (err) {
@@ -513,17 +515,12 @@ function translateAuthError(errorMsg: string): string {
         setSession(data.session);
         await loadUserData(data.user);
 
-        // Check if user is superadmin
-        const isMasterAdminEmail = data.user.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
-        const { data: adminData } = await supabase
-          .from('admin_roles')
-          .select('*')
-          .eq('user_id', data.user.id)
-          .maybeSingle();
+        // Check if user is superadmin (Strictly unique to master email kalebsantos2801@gmail.com)
+        const isMasterAdmin = Boolean(
+          data.user.email && data.user.email.toLowerCase().trim() === 'kalebsantos2801@gmail.com'
+        );
 
-        const isSuperAdmin = adminData?.role === 'superadmin' || isMasterAdminEmail;
-
-        return { success: true, isSuperAdmin };
+        return { success: true, isSuperAdmin: isMasterAdmin };
       }
 
       return { success: true };
@@ -807,8 +804,13 @@ function translateAuthError(errorMsg: string): string {
   };
 
   // Check trial expiration against authoritative server time
-  const isMasterAdminEmail = user?.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com' || profile?.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
-  const isSuperAdmin = Boolean(adminRole?.role === 'superadmin' || (profile?.role === 'admin' && adminRole) || isMasterAdminEmail);
+  const isMasterAdminEmail = Boolean(
+    (user?.email && user.email.toLowerCase().trim() === 'kalebsantos2801@gmail.com') ||
+    (profile?.email && profile.email.toLowerCase().trim() === 'kalebsantos2801@gmail.com')
+  );
+  const isSuperAdmin = Boolean(
+    isMasterAdminEmail && adminRole?.role === 'superadmin' && adminRole?.user_id === user?.id
+  );
   
   let isTrialExpired = false;
   if (!isSuperAdmin) {
