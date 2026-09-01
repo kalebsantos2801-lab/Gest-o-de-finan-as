@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured, updateSupabaseConfig } from '@/lib/supabase';
 import { Profile, Family, FamilyMember, TrialPeriod, AdminRole } from '@/types/database';
+import { memoryCache } from '@/lib/cache';
 
 interface SignUpData {
   name: string;
@@ -82,6 +83,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       let currentProfile = profileData;
 
+      // Master admin check (Kalebsantos emails)
+      const cleanEmail = (currentUser.email || '').toLowerCase().trim();
+      const isMasterAdminEmail = cleanEmail === 'kalebsantos2801@gmail.com' || cleanEmail === 'kalebsantos06@gmail.com';
+
+      // Known admin family ID that must NEVER be shared with regular client accounts
+      const superAdminFamilyId = '8853acf1-f040-4b4e-b807-05bb97eca7a8';
+
+      // Safeguard: If a non-superadmin account (e.g. Wellington or any other client) was inadvertently linked to the master admin family, detach and assign their own private family
+      const isLinkedToAdminFamily = currentProfile?.family_id === superAdminFamilyId;
+
+      if (!isMasterAdminEmail && (isLinkedToAdminFamily || !currentProfile?.family_id)) {
+        // Create an exclusive, dedicated family for this user
+        const familyName = currentUser.user_metadata?.family_name || 'Minha Família';
+        const { data: newFamily } = await supabase
+          .from('families')
+          .insert({ name: familyName })
+          .select()
+          .single();
+
+        if (newFamily) {
+          // Detach from previous shared family members
+          await supabase.from('family_members').delete().eq('user_id', currentUser.id);
+
+          const { data: repairedProfile } = await supabase
+            .from('profiles')
+            .upsert({
+              id: currentUser.id,
+              full_name: currentProfile?.full_name || currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Usuário',
+              email: currentProfile?.email || currentUser.email,
+              family_id: newFamily.id,
+              role: 'owner',
+              status: currentProfile?.status || 'trial'
+            })
+            .select()
+            .single();
+
+          if (repairedProfile) currentProfile = repairedProfile;
+
+          await supabase.from('family_members').upsert({
+            family_id: newFamily.id,
+            user_id: currentUser.id,
+            member_type: 'Titular',
+            permission: 'owner',
+          });
+
+          const now = new Date();
+          const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+          await supabase.from('trial_periods').upsert({
+            user_id: currentUser.id,
+            family_id: newFamily.id,
+            trial_started_at: now.toISOString(),
+            trial_expires_at: expiresAt.toISOString(),
+            status: 'trial',
+          });
+        }
+      }
+
       if (!currentProfile || !currentProfile.family_id) {
         // Double check: check if the user already has any family member record
         const { data: existingMember } = await supabase
@@ -90,8 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .eq('user_id', currentUser.id)
           .maybeSingle();
 
-        if (existingMember?.family_id) {
-          // A family association already exists! Recover and use it instead of creating a new family.
+        if (existingMember?.family_id && (isMasterAdminEmail || existingMember.family_id !== superAdminFamilyId)) {
           const { data: recoveredProfile } = await supabase
             .from('profiles')
             .upsert({
@@ -106,7 +163,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .single();
           if (recoveredProfile) currentProfile = recoveredProfile;
         } else {
-          // Auto-create Family and Profile if they don't exist (e.g., OAuth login)
+          // Auto-create Family and Profile if they don't exist
           const familyName = currentUser.user_metadata?.family_name || 'Minha Família';
           const { data: newFamily } = await supabase
             .from('families')
@@ -147,6 +204,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               status: 'trial',
             });
           }
+        }
+      }
+
+      // Backfill user_id for current user's existing records to ensure bulletproof ownership
+      if (currentProfile?.family_id) {
+        try {
+          await Promise.all([
+            supabase.from('accounts').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('income').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('expenses').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('credit_cards').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('debts').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('loans').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+            supabase.from('goals').update({ user_id: currentUser.id }).eq('family_id', currentProfile.family_id).is('user_id', null),
+          ]);
+        } catch {
+          // ignore any non-critical backfill errors
         }
       }
 
@@ -229,8 +303,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setTrial(trialData);
 
       // 4. Fetch Admin Role (or assign for master admin email kalebsantos2801@gmail.com)
-      const isMasterAdminEmail = currentUser.email?.toLowerCase().trim() === 'kalebsantos2801@gmail.com';
-
       const { data: adminData } = await supabase
         .from('admin_roles')
         .select('*')
@@ -307,10 +379,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(newSession?.user ?? null);
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        memoryCache.clear();
         if (newSession?.user) {
           loadUserData(newSession.user);
         }
       } else if (event === 'SIGNED_OUT') {
+        memoryCache.clear();
         setUser(null);
         setSession(null);
         setProfile(null);
@@ -434,6 +508,7 @@ function translateAuthError(errorMsg: string): string {
       }
 
       if (data.user) {
+        memoryCache.clear();
         setUser(data.user);
         setSession(data.session);
         await loadUserData(data.user);
@@ -549,6 +624,7 @@ function translateAuthError(errorMsg: string): string {
 
       // Reload state if session already active (e.g. email confirmation off)
       if (authData.session) {
+        memoryCache.clear();
         setSession(authData.session);
         setUser(createdUser);
         await loadUserData(createdUser);
@@ -563,6 +639,7 @@ function translateAuthError(errorMsg: string): string {
 
   // Sign Out
   const signOut = async () => {
+    memoryCache.clear();
     if (isSupabaseConfigured) {
       await supabase.auth.signOut();
     }

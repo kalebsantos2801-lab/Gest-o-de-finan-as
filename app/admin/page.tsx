@@ -99,8 +99,7 @@ function AdminDashboardContent() {
 
     useEffect(() => {
     if (timeModalOpen && selectedUser) {
-      const familyId = selectedUser.family_id || selectedUser.id;
-      const current = trialPeriods[familyId] || trialPeriods[selectedUser.id];
+      const current = trialPeriods[selectedUser.id] || (selectedUser.family_id ? trialPeriods[selectedUser.family_id] : undefined);
       const initialDate = current?.trial_expires_at 
         ? new Date(current.trial_expires_at) 
         : new Date(serverTime.getTime() + 24 * 60 * 60 * 1000);
@@ -134,20 +133,40 @@ function AdminDashboardContent() {
       let loadedProfiles: ExtendedProfile[] = [];
       if (profData) {
         loadedProfiles = profData as ExtendedProfile[];
+        
+        // Auto-heal profiles: Ensure non-master users do not share the master admin family
+        const superAdminFamilyId = '8853acf1-f040-4b4e-b807-05bb97eca7a8';
+        for (const p of loadedProfiles) {
+          const isMaster = p.email?.toLowerCase() === 'kalebsantos2801@gmail.com';
+          if (!isMaster && p.family_id === superAdminFamilyId) {
+            const newFamId = crypto.randomUUID();
+            try {
+              await supabase.from('families').upsert({ id: newFamId, name: `Família de ${p.full_name || p.email}` });
+              await supabase.from('profiles').update({ family_id: newFamId }).eq('id', p.id);
+              p.family_id = newFamId;
+            } catch (healErr) {
+              console.warn('Healing family err:', healErr);
+            }
+          }
+        }
         setUsers(loadedProfiles);
       } else if (profErr) {
         console.error('Error fetching profiles:', profErr);
       }
 
-      // 2. Load trial periods
+      // 2. Load trial periods - map strictly by user_id
       const { data: trialData } = await supabase
         .from('trial_periods')
         .select('*');
       if (trialData) {
         const map: Record<string, TrialPeriod> = {};
+        // First map by specific user_id
         trialData.forEach((t: TrialPeriod) => {
-          if (t.family_id) map[t.family_id] = t;
           if (t.user_id) map[t.user_id] = t;
+        });
+        // Fallback map by family_id only if slot is empty
+        trialData.forEach((t: TrialPeriod) => {
+          if (t.family_id && !map[t.family_id]) map[t.family_id] = t;
         });
         setTrialPeriods(map);
       }
@@ -307,26 +326,17 @@ function AdminDashboardContent() {
             console.error('Erro ao atualizar status em profiles:', profErr);
           }
 
-          // Se tiver família, atualizar todos os membros da família também
-          if (targetUser.family_id) {
-            await supabase
-              .from('profiles')
-              .update({ 
-                status: newStatus,
-                updated_at: new Date().toISOString() 
-              })
-              .eq('family_id', targetUser.family_id);
-          }
-
-          // 2. Atualizar tabela trial_periods
-          const existingTrial = trialPeriods[targetUser.id] || trialPeriods[familyId];
+          // 2. Atualizar tabela trial_periods estritamente para o usuário
+          const existingTrial = trialPeriods[targetUser.id];
           const trialPayload: any = {
             user_id: targetUser.id,
             status: newStatus,
             is_blocked: !currentBlocked,
             updated_at: new Date().toISOString()
           };
-          if (existingTrial?.id) trialPayload.id = existingTrial.id;
+          if (existingTrial && existingTrial.user_id === targetUser.id && existingTrial.id) {
+            trialPayload.id = existingTrial.id;
+          }
           if (familyId) trialPayload.family_id = familyId;
 
           const { error: trialErr } = await supabase
@@ -367,14 +377,14 @@ function AdminDashboardContent() {
       if (customExpiryDate) {
         finalExpiryDate = new Date(customExpiryDate).toISOString();
       } else {
-        const current = trialPeriods[familyId] || trialPeriods[target.id];
+        const current = trialPeriods[target.id] || (target.family_id ? trialPeriods[target.family_id] : null);
         const baseDate = current?.trial_expires_at && new Date(current.trial_expires_at).getTime() > serverTime.getTime()
           ? new Date(current.trial_expires_at)
           : new Date(serverTime.getTime());
         finalExpiryDate = new Date(baseDate.getTime() + customDays * 24 * 60 * 60 * 1000).toISOString();
       }
 
-      const existingTrial = trialPeriods[target.id] || trialPeriods[familyId];
+      const existingTrial = trialPeriods[target.id];
       const trialPayload: any = {
         user_id: target.id,
         family_id: familyId,
@@ -383,7 +393,9 @@ function AdminDashboardContent() {
         is_blocked: false,
         updated_at: new Date().toISOString()
       };
-      if (existingTrial?.id) trialPayload.id = existingTrial.id;
+      if (existingTrial && existingTrial.user_id === target.id && existingTrial.id) {
+        trialPayload.id = existingTrial.id;
+      }
 
       await supabase
         .from('trial_periods')
@@ -393,13 +405,6 @@ function AdminDashboardContent() {
         .from('profiles')
         .update({ status: 'active', updated_at: new Date().toISOString() })
         .eq('id', target.id);
-
-      if (target.family_id) {
-        await supabase
-          .from('profiles')
-          .update({ status: 'active', updated_at: new Date().toISOString() })
-          .eq('family_id', target.family_id);
-      }
 
       await logAudit('ADJUST_TRIAL_TIME', familyId, target.id, {
         userEmail: target.email,
@@ -421,7 +426,7 @@ function AdminDashboardContent() {
   // 4. ATRIBUIÇÃO RÁPIDA DE DIAS DE TESTE
   const handleQuickAddTime = (targetUser: ExtendedProfile, minutes: number) => {
     const familyId = targetUser.family_id || targetUser.id;
-    const current = trialPeriods[familyId] || trialPeriods[targetUser.id];
+    const current = trialPeriods[targetUser.id] || (targetUser.family_id ? trialPeriods[targetUser.family_id] : null);
     const baseDate = current?.trial_expires_at && new Date(current.trial_expires_at).getTime() > serverTime.getTime()
       ? new Date(current.trial_expires_at)
       : new Date(serverTime.getTime());
@@ -436,7 +441,7 @@ function AdminDashboardContent() {
       onConfirm: async () => {
         setActionLoading(`quick_${targetUser.id}_${minutes}`);
         try {
-          const existingTrial = trialPeriods[targetUser.id] || trialPeriods[familyId];
+          const existingTrial = trialPeriods[targetUser.id];
           const trialPayload: any = {
             user_id: targetUser.id,
             family_id: familyId,
@@ -445,7 +450,9 @@ function AdminDashboardContent() {
             is_blocked: false,
             updated_at: new Date().toISOString()
           };
-          if (existingTrial?.id) trialPayload.id = existingTrial.id;
+          if (existingTrial && existingTrial.user_id === targetUser.id && existingTrial.id) {
+            trialPayload.id = existingTrial.id;
+          }
 
           await supabase
             .from('trial_periods')
@@ -487,7 +494,7 @@ function AdminDashboardContent() {
       onConfirm: async () => {
         setActionLoading(`expire_${targetUser.id}`);
         try {
-          const existingTrial = trialPeriods[targetUser.id] || trialPeriods[familyId];
+          const existingTrial = trialPeriods[targetUser.id];
           const trialPayload: any = {
             user_id: targetUser.id,
             family_id: familyId,
@@ -495,7 +502,9 @@ function AdminDashboardContent() {
             status: 'expired',
             updated_at: new Date().toISOString()
           };
-          if (existingTrial?.id) trialPayload.id = existingTrial.id;
+          if (existingTrial && existingTrial.user_id === targetUser.id && existingTrial.id) {
+            trialPayload.id = existingTrial.id;
+          }
 
           await supabase
             .from('trial_periods')
@@ -663,8 +672,7 @@ function AdminDashboardContent() {
         u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         u.email?.toLowerCase().includes(searchTerm.toLowerCase());
 
-      const familyId = u.family_id || u.id;
-      const trial = trialPeriods[familyId] || trialPeriods[u.id];
+      const trial = trialPeriods[u.id] || (u.family_id ? trialPeriods[u.family_id] : undefined);
       const isExpired = trial?.trial_expires_at ? new Date(trial.trial_expires_at).getTime() < serverTime.getTime() : false;
       const isBlocked = trial?.is_blocked || u.status === 'blocked';
 
@@ -689,8 +697,7 @@ function AdminDashboardContent() {
 
     users.forEach(u => {
       if (u.role === 'admin') adminCount++;
-      const familyId = u.family_id || u.id;
-      const trial = trialPeriods[familyId] || trialPeriods[u.id];
+      const trial = trialPeriods[u.id] || (u.family_id ? trialPeriods[u.family_id] : undefined);
       const isBlocked = trial?.is_blocked || u.status === 'blocked';
       const isExpired = trial?.trial_expires_at ? new Date(trial.trial_expires_at).getTime() < serverTime.getTime() : false;
 
@@ -921,8 +928,7 @@ function AdminDashboardContent() {
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {filteredUsers.map((u) => {
-                      const familyId = u.family_id || u.id;
-                      const trial = trialPeriods[familyId] || trialPeriods[u.id];
+                      const trial = trialPeriods[u.id] || (u.family_id ? trialPeriods[u.family_id] : undefined);
                       const isExpired = trial?.trial_expires_at ? new Date(trial.trial_expires_at).getTime() < serverTime.getTime() : false;
                       const isBlocked = trial?.is_blocked || u.status === 'blocked';
                       const isTargetMaster = u.email?.toLowerCase() === 'kalebsantos2801@gmail.com';
@@ -1061,9 +1067,8 @@ function AdminDashboardContent() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredUsers.map((u) => {
-                const familyId = u.family_id || u.id;
-                const isTargetMaster = u.email?.toLowerCase() === 'superadmin123@gmail.com';
-                const trial = trialPeriods[familyId] || trialPeriods[u.id];
+                const isTargetMaster = u.email?.toLowerCase() === 'kalebsantos2801@gmail.com';
+                const trial = trialPeriods[u.id] || (u.family_id ? trialPeriods[u.family_id] : undefined);
                 const isExpired = trial?.trial_expires_at ? new Date(trial.trial_expires_at).getTime() < serverTime.getTime() : false;
                 const isBlocked = trial?.is_blocked || u.status === 'blocked';
 
@@ -1568,7 +1573,7 @@ function AdminDashboardContent() {
                   <span className="text-slate-400 font-medium">Vencimento Atual:</span>
                   <strong className="text-slate-200 font-mono">
                     {(() => {
-                      const t = trialPeriods[selectedUser.family_id || selectedUser.id] || trialPeriods[selectedUser.id];
+                      const t = trialPeriods[selectedUser.id] || (selectedUser.family_id ? trialPeriods[selectedUser.family_id] : undefined);
                       return t?.trial_expires_at ? new Date(t.trial_expires_at).toLocaleString('pt-BR') : 'Indeterminado';
                     })()}
                   </strong>
@@ -1576,7 +1581,7 @@ function AdminDashboardContent() {
                 <div className="flex justify-between w-full items-center pt-2.5 border-t border-white/5">
                   <span className="text-slate-400 font-bold text-amber-500">Tempo Restante:</span>
                   {(() => {
-                    const t = trialPeriods[selectedUser.family_id || selectedUser.id] || trialPeriods[selectedUser.id];
+                    const t = trialPeriods[selectedUser.id] || (selectedUser.family_id ? trialPeriods[selectedUser.family_id] : undefined);
                     return <CountdownTimer expiresAt={t?.trial_expires_at || null} />;
                   })()}
                 </div>

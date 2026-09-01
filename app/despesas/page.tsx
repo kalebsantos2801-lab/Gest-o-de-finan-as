@@ -102,7 +102,7 @@ function ExpensesContent() {
   };
 
   const loadData = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -111,29 +111,37 @@ function ExpensesContent() {
       setLoading(true);
     }
     try {
-      const { data: expData } = await supabase
-        .from('expenses')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('due_date', { ascending: false });
+      const expQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('expenses').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('due_date', { ascending: false })
+            : supabase.from('expenses').select('*').eq('user_id', user.id).order('due_date', { ascending: false }))
+        : supabase.from('expenses').select('*').eq('family_id', profile?.family_id!).order('due_date', { ascending: false });
+
+      const { data: expData } = await expQuery;
       if (expData) {
         setExpenses(expData as Expense[]);
         memoryCache.set('expenses_list', expData);
       }
 
-      const { data: accData } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('family_id', profile.family_id);
+      const accQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('accounts').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`)
+            : supabase.from('accounts').select('*').eq('user_id', user.id))
+        : supabase.from('accounts').select('*').eq('family_id', profile?.family_id!);
+
+      const { data: accData } = await accQuery;
       if (accData) {
         setAccounts(accData as Account[]);
         memoryCache.set('expenses_accounts', accData);
       }
 
-      const { data: cardsData } = await supabase
-        .from('credit_cards')
-        .select('*')
-        .eq('family_id', profile.family_id);
+      const cardsQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('credit_cards').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`)
+            : supabase.from('credit_cards').select('*').eq('user_id', user.id))
+        : supabase.from('credit_cards').select('*').eq('family_id', profile?.family_id!);
+
+      const { data: cardsData } = await cardsQuery;
       if (cardsData) {
         setCreditCards(cardsData as CreditCardType[]);
         memoryCache.set('expenses_credit_cards', cardsData);
@@ -143,7 +151,7 @@ function ExpensesContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('expenses_list');

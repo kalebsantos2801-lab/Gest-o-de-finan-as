@@ -78,7 +78,7 @@ function DebtsContent() {
   };
 
   const loadDebts = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -86,11 +86,13 @@ function DebtsContent() {
       setLoading(true);
     }
     try {
-      const { data } = await supabase
-        .from('debts')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('created_at', { ascending: false });
+      const debtsQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('debts').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('created_at', { ascending: false })
+            : supabase.from('debts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }))
+        : supabase.from('debts').select('*').eq('family_id', profile?.family_id!).order('created_at', { ascending: false });
+
+      const { data } = await debtsQuery;
       if (data) {
         setDebts(data as Debt[]);
         memoryCache.set('debts_list', data);
@@ -100,7 +102,7 @@ function DebtsContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('debts_list');

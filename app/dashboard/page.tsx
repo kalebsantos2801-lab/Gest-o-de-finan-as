@@ -20,7 +20,7 @@ export default function DashboardPage() {
 }
 
 function DashboardContent() {
-  const { profile, family, user, refreshProfile } = useAuth();
+  const { profile, user } = useAuth();
 
   const [accounts, setAccounts] = useState<Account[]>(() => memoryCache.get<Account[]>('dashboard_accounts') || []);
   const [incomes, setIncomes] = useState<Income[]>(() => memoryCache.get<Income[]>('dashboard_incomes') || []);
@@ -29,40 +29,6 @@ function DashboardContent() {
   const [cards, setCards] = useState<CreditCardType[]>(() => memoryCache.get<CreditCardType[]>('dashboard_cards') || []);
   const [debts, setDebts] = useState<Debt[]>(() => memoryCache.get<Debt[]>('dashboard_debts') || []);
   const [loading, setLoading] = useState(() => !memoryCache.get('dashboard_accounts'));
-
-  // Recovery migration for family_id mismatch to restore historical data
-  useEffect(() => {
-    async function recoverFamilyId() {
-      const correctFamilyId = '8853acf1-f040-4b4e-b807-05bb97eca7a8';
-      if (profile?.id && profile?.family_id && profile?.family_id !== correctFamilyId) {
-        const wrongFamilyId = profile.family_id;
-        try {
-          const { error } = await supabase
-            .from('profiles')
-            .update({ family_id: correctFamilyId })
-            .eq('id', profile.id);
-          
-          if (!error) {
-            await supabase
-              .from('family_members')
-              .delete()
-              .eq('family_id', wrongFamilyId)
-              .eq('user_id', profile.id);
-
-            await supabase
-              .from('families')
-              .delete()
-              .eq('id', wrongFamilyId);
-
-            await refreshProfile();
-          }
-        } catch (e) {
-          console.error('Migration failed:', e);
-        }
-      }
-    }
-    recoverFamilyId();
-  }, [profile, refreshProfile]);
 
   const fetchDashboardData = useCallback(async () => {
     if (!profile?.family_id && !user?.id) {
@@ -80,9 +46,11 @@ function DashboardContent() {
       const userId = user?.id || profile?.id;
 
       // 1. Fetch Accounts
-      const accountsQuery = familyId
-        ? supabase.from('accounts').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('accounts').select('*').eq('user_id', userId!);
+      const accountsQuery = userId
+        ? (familyId 
+            ? supabase.from('accounts').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('accounts').select('*').eq('user_id', userId))
+        : supabase.from('accounts').select('*').eq('family_id', familyId!);
       const { data: accountsData } = await accountsQuery;
       if (accountsData) {
         setAccounts(accountsData as Account[]);
@@ -90,9 +58,11 @@ function DashboardContent() {
       }
 
       // 2. Fetch Incomes
-      const incomeQuery = familyId
-        ? supabase.from('income').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`).order('received_at', { ascending: false })
-        : supabase.from('income').select('*').eq('user_id', userId!).order('received_at', { ascending: false });
+      const incomeQuery = userId
+        ? (familyId 
+            ? supabase.from('income').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`).order('received_at', { ascending: false })
+            : supabase.from('income').select('*').eq('user_id', userId).order('received_at', { ascending: false }))
+        : supabase.from('income').select('*').eq('family_id', familyId!).order('received_at', { ascending: false });
       const { data: incomeData } = await incomeQuery;
       if (incomeData) {
         setIncomes(incomeData as Income[]);
@@ -100,9 +70,11 @@ function DashboardContent() {
       }
 
       // 3. Fetch Expenses
-      const expenseQuery = familyId
-        ? supabase.from('expenses').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`).order('due_date', { ascending: false })
-        : supabase.from('expenses').select('*').eq('user_id', userId!).order('due_date', { ascending: false });
+      const expenseQuery = userId
+        ? (familyId 
+            ? supabase.from('expenses').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`).order('due_date', { ascending: false })
+            : supabase.from('expenses').select('*').eq('user_id', userId).order('due_date', { ascending: false }))
+        : supabase.from('expenses').select('*').eq('family_id', familyId!).order('due_date', { ascending: false });
       const { data: expenseData } = await expenseQuery;
       if (expenseData) {
         setExpenses(expenseData as Expense[]);
@@ -110,9 +82,11 @@ function DashboardContent() {
       }
 
       // 4. Fetch Goals
-      const goalsQuery = familyId
-        ? supabase.from('goals').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`).limit(6)
-        : supabase.from('goals').select('*').eq('user_id', userId!).limit(6);
+      const goalsQuery = userId
+        ? (familyId 
+            ? supabase.from('goals').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`).limit(6)
+            : supabase.from('goals').select('*').eq('user_id', userId).limit(6))
+        : supabase.from('goals').select('*').eq('family_id', familyId!).limit(6);
       const { data: goalsData } = await goalsQuery;
       if (goalsData) {
         setGoals(goalsData as Goal[]);
@@ -120,9 +94,11 @@ function DashboardContent() {
       }
 
       // 5. Fetch Cards
-      const cardsQuery = familyId
-        ? supabase.from('credit_cards').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('credit_cards').select('*').eq('user_id', userId!);
+      const cardsQuery = userId
+        ? (familyId 
+            ? supabase.from('credit_cards').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('credit_cards').select('*').eq('user_id', userId))
+        : supabase.from('credit_cards').select('*').eq('family_id', familyId!);
       const { data: cardsData } = await cardsQuery;
       if (cardsData) {
         setCards(cardsData as CreditCardType[]);
@@ -130,9 +106,11 @@ function DashboardContent() {
       }
 
       // 6. Fetch Debts
-      const debtsQuery = familyId
-        ? supabase.from('debts').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('debts').select('*').eq('user_id', userId!);
+      const debtsQuery = userId
+        ? (familyId 
+            ? supabase.from('debts').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('debts').select('*').eq('user_id', userId))
+        : supabase.from('debts').select('*').eq('family_id', familyId!);
       const { data: debtsData } = await debtsQuery;
       if (debtsData) {
         setDebts(debtsData as Debt[]);

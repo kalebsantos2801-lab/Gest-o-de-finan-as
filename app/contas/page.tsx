@@ -70,7 +70,7 @@ function AccountsContent() {
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
 
   const loadAccounts = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -78,11 +78,13 @@ function AccountsContent() {
       setLoading(true);
     }
     try {
-      const { data } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('created_at', { ascending: false });
+      const query = user?.id
+        ? (profile?.family_id
+            ? supabase.from('accounts').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('created_at', { ascending: false })
+            : supabase.from('accounts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }))
+        : supabase.from('accounts').select('*').eq('family_id', profile?.family_id!).order('created_at', { ascending: false });
+
+      const { data } = await query;
       if (data) {
         setAccounts(data as Account[]);
         memoryCache.set('accounts_list', data);
@@ -92,7 +94,7 @@ function AccountsContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('accounts_list');

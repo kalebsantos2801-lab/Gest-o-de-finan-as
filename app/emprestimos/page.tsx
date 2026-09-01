@@ -41,7 +41,7 @@ function LoansContent() {
   const [errorMsg, setErrorMsg] = useState('');
 
   const loadLoans = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -50,11 +50,13 @@ function LoansContent() {
       setLoading(true);
     }
     try {
-      const { data } = await supabase
-        .from('loans')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('created_at', { ascending: false });
+      const loansQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('loans').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('created_at', { ascending: false })
+            : supabase.from('loans').select('*').eq('user_id', user.id).order('created_at', { ascending: false }))
+        : supabase.from('loans').select('*').eq('family_id', profile?.family_id!).order('created_at', { ascending: false });
+
+      const { data } = await loansQuery;
       if (data) {
         setLoans(data as Loan[]);
         memoryCache.set('loans_list', data);
@@ -64,7 +66,7 @@ function LoansContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('loans_list');

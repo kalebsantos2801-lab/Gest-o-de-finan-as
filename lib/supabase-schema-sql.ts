@@ -391,50 +391,48 @@ ALTER TABLE public.notification_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_settings ENABLE ROW LEVEL SECURITY;
 
 -- ====================================================================
--- 13. POLÍTICAS DE RLS (ROW LEVEL SECURITY)
+-- 13. POLÍTICAS DE RLS (ROW LEVEL SECURITY - ISOLAMENTO TOTAL DE DADOS)
 -- ====================================================================
 
--- PROFILES
-CREATE POLICY "profiles_select_policy" ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "profiles_insert_policy" ON public.profiles FOR INSERT WITH CHECK (true);
+-- PROFILES: Usuário vê e edita seu próprio perfil; Superadmin tem acesso total
+CREATE POLICY "profiles_select_policy" ON public.profiles FOR SELECT USING (id = auth.uid() OR public.is_superadmin());
+CREATE POLICY "profiles_insert_policy" ON public.profiles FOR INSERT WITH CHECK (id = auth.uid() OR public.is_superadmin());
 CREATE POLICY "profiles_update_policy" ON public.profiles FOR UPDATE USING (id = auth.uid() OR public.is_superadmin());
 
--- FAMILIES
-CREATE POLICY "families_all_policy" ON public.families FOR ALL USING (true);
+-- FAMILIES: Usuário só acessa a própria família
+CREATE POLICY "families_all_policy" ON public.families FOR ALL USING (id = public.get_user_family_id() OR public.is_superadmin());
 
--- FAMILY_MEMBERS
-CREATE POLICY "family_members_all_policy" ON public.family_members FOR ALL USING (true);
+-- FAMILY_MEMBERS: Membro só acessa membros da sua família
+CREATE POLICY "family_members_all_policy" ON public.family_members FOR ALL USING (family_id = public.get_user_family_id() OR user_id = auth.uid() OR public.is_superadmin());
 
--- TRIAL_PERIODS
-CREATE POLICY "trial_periods_all_policy" ON public.trial_periods FOR ALL USING (true);
+-- TRIAL_PERIODS: Apenas dados do próprio usuário/família
+CREATE POLICY "trial_periods_all_policy" ON public.trial_periods FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id() OR public.is_superadmin());
 
--- RELEASE_REQUESTS
-CREATE POLICY "release_requests_all_policy" ON public.release_requests FOR ALL USING (true);
+-- RELEASE_REQUESTS: Usuário vê seus próprios pedidos; Superadmin gerencia todos
+CREATE POLICY "release_requests_all_policy" ON public.release_requests FOR ALL USING (user_id = auth.uid() OR public.is_superadmin());
 
--- ADMIN_ROLES
-CREATE POLICY "admin_roles_all_policy" ON public.admin_roles FOR ALL USING (true);
+-- ADMIN_ROLES & LOGS: Restrito a superadministradores
+CREATE POLICY "admin_roles_all_policy" ON public.admin_roles FOR ALL USING (user_id = auth.uid() OR public.is_superadmin());
+CREATE POLICY "admin_logs_all_policy" ON public.admin_logs FOR ALL USING (public.is_superadmin());
 
--- ADMIN_LOGS
-CREATE POLICY "admin_logs_all_policy" ON public.admin_logs FOR ALL USING (true);
-
--- DADOS FINANCEIROS
-CREATE POLICY "accounts_all_policy" ON public.accounts FOR ALL USING (true);
-CREATE POLICY "transactions_all_policy" ON public.transactions FOR ALL USING (true);
-CREATE POLICY "income_all_policy" ON public.income FOR ALL USING (true);
-CREATE POLICY "expenses_all_policy" ON public.expenses FOR ALL USING (true);
-CREATE POLICY "credit_cards_all_policy" ON public.credit_cards FOR ALL USING (true);
-CREATE POLICY "credit_card_purchases_all_policy" ON public.credit_card_purchases FOR ALL USING (true);
-CREATE POLICY "credit_card_installments_all_policy" ON public.credit_card_installments FOR ALL USING (true);
-CREATE POLICY "invoices_all_policy" ON public.invoices FOR ALL USING (true);
-CREATE POLICY "loans_all_policy" ON public.loans FOR ALL USING (true);
-CREATE POLICY "loan_installments_all_policy" ON public.loan_installments FOR ALL USING (true);
-CREATE POLICY "debts_all_policy" ON public.debts FOR ALL USING (true);
-CREATE POLICY "goals_all_policy" ON public.goals FOR ALL USING (true);
-CREATE POLICY "budgets_all_policy" ON public.budgets FOR ALL USING (true);
-CREATE POLICY "notifications_all_policy" ON public.notifications FOR ALL USING (true);
-CREATE POLICY "push_subscriptions_all_policy" ON public.push_subscriptions FOR ALL USING (true);
-CREATE POLICY "notification_logs_all_policy" ON public.notification_logs FOR ALL USING (true);
-CREATE POLICY "notification_settings_all_policy" ON public.notification_settings FOR ALL USING (true);
+-- DADOS FINANCEIROS PRIVADOS (ISOLAMENTO COMPLETO POR USUÁRIO / FAMÍLIA)
+CREATE POLICY "accounts_all_policy" ON public.accounts FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "transactions_all_policy" ON public.transactions FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "income_all_policy" ON public.income FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "expenses_all_policy" ON public.expenses FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "credit_cards_all_policy" ON public.credit_cards FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "credit_card_purchases_all_policy" ON public.credit_card_purchases FOR ALL USING (family_id = public.get_user_family_id());
+CREATE POLICY "credit_card_installments_all_policy" ON public.credit_card_installments FOR ALL USING (purchase_id IN (SELECT id FROM public.credit_card_purchases WHERE family_id = public.get_user_family_id()));
+CREATE POLICY "invoices_all_policy" ON public.invoices FOR ALL USING (family_id = public.get_user_family_id());
+CREATE POLICY "loans_all_policy" ON public.loans FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "loan_installments_all_policy" ON public.loan_installments FOR ALL USING (loan_id IN (SELECT id FROM public.loans WHERE user_id = auth.uid() OR family_id = public.get_user_family_id()));
+CREATE POLICY "debts_all_policy" ON public.debts FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "goals_all_policy" ON public.goals FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "budgets_all_policy" ON public.budgets FOR ALL USING (user_id = auth.uid() OR family_id = public.get_user_family_id());
+CREATE POLICY "notifications_all_policy" ON public.notifications FOR ALL USING (user_id = auth.uid());
+CREATE POLICY "push_subscriptions_all_policy" ON public.push_subscriptions FOR ALL USING (user_id = auth.uid());
+CREATE POLICY "notification_logs_all_policy" ON public.notification_logs FOR ALL USING (user_id = auth.uid());
+CREATE POLICY "notification_settings_all_policy" ON public.notification_settings FOR ALL USING (user_id = auth.uid());
 
 -- ====================================================================
 -- 14. ÍNDICES DE ALTA PERFORMANCE (ACELERAÇÃO DE TROCA DE ABAS E QUERIES)

@@ -116,7 +116,7 @@ function IncomeContent() {
   };
 
   const loadData = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -125,20 +125,25 @@ function IncomeContent() {
       setLoading(true);
     }
     try {
-      const { data: incData } = await supabase
-        .from('income')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('received_at', { ascending: false });
+      const incQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('income').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('received_at', { ascending: false })
+            : supabase.from('income').select('*').eq('user_id', user.id).order('received_at', { ascending: false }))
+        : supabase.from('income').select('*').eq('family_id', profile?.family_id!).order('received_at', { ascending: false });
+
+      const { data: incData } = await incQuery;
       if (incData) {
         setIncomes(incData as Income[]);
         memoryCache.set('income_list', incData);
       }
 
-      const { data: accData } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('family_id', profile.family_id);
+      const accQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('accounts').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`)
+            : supabase.from('accounts').select('*').eq('user_id', user.id))
+        : supabase.from('accounts').select('*').eq('family_id', profile?.family_id!);
+
+      const { data: accData } = await accQuery;
       if (accData) {
         setAccounts(accData as Account[]);
         memoryCache.set('income_accounts', accData);
@@ -151,7 +156,7 @@ function IncomeContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('income_list');

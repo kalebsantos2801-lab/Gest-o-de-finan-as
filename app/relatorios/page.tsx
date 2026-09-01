@@ -51,30 +51,42 @@ function ReportsContent() {
       setLoading(true);
     }
     try {
-      // Build queries that check family_id or user_id
-      const incPromise = familyId 
-        ? supabase.from('income').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('income').select('*').eq('user_id', userId!);
+      // Build queries that strictly isolate data by user_id and private family_id
+      const incPromise = userId
+        ? (familyId 
+            ? supabase.from('income').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('income').select('*').eq('user_id', userId))
+        : supabase.from('income').select('*').eq('family_id', familyId!);
 
-      const expPromise = familyId
-        ? supabase.from('expenses').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('expenses').select('*').eq('user_id', userId!);
+      const expPromise = userId
+        ? (familyId 
+            ? supabase.from('expenses').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('expenses').select('*').eq('user_id', userId))
+        : supabase.from('expenses').select('*').eq('family_id', familyId!);
 
-      const accPromise = familyId
-        ? supabase.from('accounts').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('accounts').select('*').eq('user_id', userId!);
+      const accPromise = userId
+        ? (familyId 
+            ? supabase.from('accounts').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('accounts').select('*').eq('user_id', userId))
+        : supabase.from('accounts').select('*').eq('family_id', familyId!);
 
-      const dbtPromise = familyId
-        ? supabase.from('debts').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('debts').select('*').eq('user_id', userId!);
+      const dbtPromise = userId
+        ? (familyId 
+            ? supabase.from('debts').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('debts').select('*').eq('user_id', userId))
+        : supabase.from('debts').select('*').eq('family_id', familyId!);
 
-      const glsPromise = familyId
-        ? supabase.from('goals').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('goals').select('*').eq('user_id', userId!);
+      const glsPromise = userId
+        ? (familyId 
+            ? supabase.from('goals').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('goals').select('*').eq('user_id', userId))
+        : supabase.from('goals').select('*').eq('family_id', familyId!);
 
-      const lnsPromise = familyId
-        ? supabase.from('loans').select('*').or(`family_id.eq.${familyId},user_id.eq.${userId}`)
-        : supabase.from('loans').select('*').eq('user_id', userId!);
+      const lnsPromise = userId
+        ? (familyId 
+            ? supabase.from('loans').select('*').or(`user_id.eq.${userId},and(family_id.eq.${familyId},user_id.is.null)`)
+            : supabase.from('loans').select('*').eq('user_id', userId))
+        : supabase.from('loans').select('*').eq('family_id', familyId!);
 
       const memsPromise = familyId
         ? supabase.from('family_members').select('*, profile:profiles(*)').eq('family_id', familyId)

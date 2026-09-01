@@ -36,7 +36,7 @@ function GoalsContent() {
   const [errorMsg, setErrorMsg] = useState('');
 
   const loadGoals = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -45,11 +45,13 @@ function GoalsContent() {
       setLoading(true);
     }
     try {
-      const { data } = await supabase
-        .from('goals')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('created_at', { ascending: false });
+      const goalsQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('goals').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('created_at', { ascending: false })
+            : supabase.from('goals').select('*').eq('user_id', user.id).order('created_at', { ascending: false }))
+        : supabase.from('goals').select('*').eq('family_id', profile?.family_id!).order('created_at', { ascending: false });
+
+      const { data } = await goalsQuery;
       if (data) {
         setGoals(data as Goal[]);
         memoryCache.set('goals_list', data);
@@ -59,7 +61,7 @@ function GoalsContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('goals_list');

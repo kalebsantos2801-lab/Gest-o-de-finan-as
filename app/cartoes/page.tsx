@@ -466,7 +466,7 @@ function CardsContent() {
   const [errorMsg, setErrorMsg] = useState('');
 
   const loadData = useCallback(async () => {
-    if (!profile?.family_id) {
+    if (!profile?.family_id && !user?.id) {
       setLoading(false);
       return;
     }
@@ -475,11 +475,13 @@ function CardsContent() {
       setLoading(true);
     }
     try {
-      const { data: cardsData } = await supabase
-        .from('credit_cards')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('created_at', { ascending: false });
+      const cardsQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('credit_cards').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('created_at', { ascending: false })
+            : supabase.from('credit_cards').select('*').eq('user_id', user.id).order('created_at', { ascending: false }))
+        : supabase.from('credit_cards').select('*').eq('family_id', profile?.family_id!).order('created_at', { ascending: false });
+
+      const { data: cardsData } = await cardsQuery;
       if (cardsData) {
         setCards(cardsData as CreditCardType[]);
         memoryCache.set('cards_list', cardsData);
@@ -488,11 +490,13 @@ function CardsContent() {
         }
       }
 
-      const { data: purData } = await supabase
-        .from('credit_card_purchases')
-        .select('*')
-        .eq('family_id', profile.family_id)
-        .order('purchase_date', { ascending: false });
+      const purQuery = user?.id
+        ? (profile?.family_id
+            ? supabase.from('credit_card_purchases').select('*').or(`user_id.eq.${user.id},and(family_id.eq.${profile.family_id},user_id.is.null)`).order('purchase_date', { ascending: false })
+            : supabase.from('credit_card_purchases').select('*').eq('user_id', user.id).order('purchase_date', { ascending: false }))
+        : supabase.from('credit_card_purchases').select('*').eq('family_id', profile?.family_id!).order('purchase_date', { ascending: false });
+
+      const { data: purData } = await purQuery;
       if (purData) {
         setPurchases(purData as CreditCardPurchase[]);
         memoryCache.set('cards_purchases', purData);
@@ -502,7 +506,7 @@ function CardsContent() {
     } finally {
       setLoading(false);
     }
-  }, [profile?.family_id]);
+  }, [profile?.family_id, user?.id]);
 
   useEffect(() => {
     const hasCache = memoryCache.get('cards_list');

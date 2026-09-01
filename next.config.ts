@@ -1,12 +1,7 @@
 import type {NextConfig} from 'next';
 
 const nextConfig: NextConfig = {
-  output: 'export',
   reactStrictMode: true,
-  devIndicators: {
-    appIsrStatus: false,
-    buildActivity: false,
-  },
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -25,12 +20,6 @@ const nextConfig: NextConfig = {
     ],
   },
   transpilePackages: ['motion'],
-  webpack: (config, {dev}) => {
-    if (!dev) {
-      config.cache = false;
-    }
-    return config;
-  },
 };
 
 export default nextConfig;
